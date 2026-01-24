@@ -139,4 +139,4 @@ class Brain:
 
         except Exception as e:
             logger.error(f"Error generating response from DeepSeek: {e}")
-            return "хз чет лагает"
+            return "Бабки закончились так что ответов больше не будет."  # Fallback response
