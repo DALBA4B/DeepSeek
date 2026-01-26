@@ -2,6 +2,7 @@
 """
 Brain module for the DeepSeek Telegram bot.
 Handles decision-making and response generation using DeepSeek API.
+Now integrates with knowledge graphs for personalized responses.
 """
 
 import logging
@@ -12,6 +13,7 @@ from openai import OpenAI
 
 from models import BotConfig, ChatMessage
 from prompts import get_system_prompt, get_context_prompt, BOT_NAME_VARIATIONS, FALLBACK_RESPONSES
+from knowledge_graph import KnowledgeGraphManager, TopicDetector
 
 logger = logging.getLogger(__name__)
 
@@ -20,18 +22,27 @@ class Brain:
     """
     AI logic for the bot using DeepSeek API.
     Makes decisions about when to respond and generates responses.
+    Integrates with knowledge graphs for personalized context.
     """
 
-    def __init__(self, config: BotConfig, available_stickers: Optional[List[str]] = None):
+    def __init__(
+        self, 
+        config: BotConfig, 
+        available_stickers: Optional[List[str]] = None,
+        knowledge_manager: Optional[KnowledgeGraphManager] = None
+    ):
         """
         Initialize DeepSeek API client.
         
         Args:
             config: Bot configuration
             available_stickers: List of available sticker emotions for the prompt
+            knowledge_manager: Optional KnowledgeGraphManager for personalized context
         """
         self.config = config
         self._available_stickers = available_stickers or ["happy", "sad", "laugh", "cool", "think", "wtf"]
+        self._knowledge_manager = knowledge_manager
+        self._topic_detector = TopicDetector()
         
         try:
             self.client = OpenAI(
@@ -46,6 +57,16 @@ class Brain:
         except Exception as e:
             logger.error(f"Failed to initialize Brain: {e}")
             raise
+
+    def set_knowledge_manager(self, manager: KnowledgeGraphManager) -> None:
+        """
+        Set the knowledge graph manager.
+        
+        Args:
+            manager: KnowledgeGraphManager instance
+        """
+        self._knowledge_manager = manager
+        logger.info("Knowledge manager set for Brain")
 
     def should_respond(
         self, 
@@ -89,21 +110,45 @@ class Brain:
         logger.debug(f"Should not respond to: {message_text[:50]}")
         return False
 
-    def generate_response(self, message_text: str, context: str) -> str:
+    def generate_response(
+        self, 
+        message_text: str, 
+        context: str,
+        user_id: Optional[int] = None,
+        username: Optional[str] = None
+    ) -> str:
         """
         Generate a response using DeepSeek API.
+        Includes personalized context from knowledge graph if available.
         
         Args:
             message_text: The current message to respond to
             context: Formatted recent messages as context
+            user_id: Optional user ID for personalized context
+            username: Optional username for personalized context
         
         Returns:
             Generated response text (may contain REACT:, GIPHY:, STICKER: prefixes)
         """
         try:
+            # Build enhanced context with knowledge graph
+            enhanced_context = context
+            
+            if self._knowledge_manager and user_id:
+                # Get personalized context from knowledge graph
+                kg_context = self._knowledge_manager.get_relevant_context_for_message(
+                    user_id=user_id,
+                    message_text=message_text,
+                    username=username or "Unknown"
+                )
+                
+                if kg_context:
+                    enhanced_context = f"ИНФОРМАЦИЯ О ПОЛЬЗОВАТЕЛЯХ:\n{kg_context}\n\nПОСЛЕДНИЕ СООБЩЕНИЯ:\n{context}"
+                    logger.debug(f"Added knowledge graph context for user {user_id}")
+            
             messages = [
                 {"role": "system", "content": self._system_prompt},
-                {"role": "user", "content": get_context_prompt(context, message_text)}
+                {"role": "user", "content": get_context_prompt(enhanced_context, message_text)}
             ]
 
             response = self.client.chat.completions.create(
@@ -135,3 +180,8 @@ class Brain:
     def available_stickers(self) -> List[str]:
         """Get list of available sticker emotions."""
         return self._available_stickers
+    
+    @property
+    def knowledge_manager(self) -> Optional[KnowledgeGraphManager]:
+        """Get the knowledge graph manager."""
+        return self._knowledge_manager

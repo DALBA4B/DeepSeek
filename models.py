@@ -77,6 +77,9 @@ class BotConfig:
     giphy_api_key: str
     firebase_cred_path: str
     
+    # Optional API keys
+    gemini_api_key: Optional[str] = None
+    
     # Bot settings
     bot_name: str = "Вася"
     chat_id: Optional[int] = None
@@ -98,6 +101,11 @@ class BotConfig:
     giphy_api_url: str = "https://api.giphy.com/v1/gifs/search"
     giphy_limit: int = 10
     giphy_rating: str = "pg-13"
+    
+    # Scheduler settings
+    nightly_analysis_hour: int = 3
+    nightly_analysis_minute: int = 0
+    timezone: str = "Europe/Kiev"
     
     # Logging
     log_level: str = "INFO"

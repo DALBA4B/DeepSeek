@@ -101,6 +101,9 @@ def load_config() -> BotConfig:
         giphy_api_key=_get_required_env("GIPHY_API_KEY"),
         firebase_cred_path=_get_required_env("FIREBASE_CRED_PATH"),
         
+        # Optional API keys
+        gemini_api_key=os.getenv("GEMINI_API_KEY"),
+        
         # Bot settings
         bot_name=os.getenv("BOT_NAME", "Вася"),
         chat_id=_get_optional_int("CHAT_ID"),
@@ -122,6 +125,11 @@ def load_config() -> BotConfig:
         giphy_api_url=os.getenv("GIPHY_API_URL", "https://api.giphy.com/v1/gifs/search"),
         giphy_limit=_get_optional_int("GIPHY_LIMIT", 10) or 10,
         giphy_rating=os.getenv("GIPHY_RATING", "pg-13"),
+        
+        # Scheduler settings
+        nightly_analysis_hour=_get_optional_int("NIGHTLY_ANALYSIS_HOUR", 3) or 3,
+        nightly_analysis_minute=_get_optional_int("NIGHTLY_ANALYSIS_MINUTE", 0) or 0,
+        timezone=os.getenv("TIMEZONE", "Europe/Kiev"),
         
         # Logging
         log_level=os.getenv("LOG_LEVEL", "INFO"),

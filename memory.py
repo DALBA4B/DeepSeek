@@ -2,6 +2,7 @@
 """
 Memory management for the DeepSeek Telegram bot.
 Handles both short-term (in-RAM) and long-term (Firebase) memory.
+Now includes bot's own responses in short-term memory.
 """
 
 import logging
@@ -29,6 +30,11 @@ class MemoryStorage(ABC):
     @abstractmethod
     def update_user(self, user: UserInfo) -> None:
         """Update user information in storage."""
+        pass
+    
+    @abstractmethod
+    def get_client(self):
+        """Get the underlying database client."""
         pass
 
 
@@ -81,14 +87,23 @@ class FirebaseStorage(MemoryStorage):
             logger.debug(f"User updated in Firebase: {user.username}")
         except Exception as e:
             logger.error(f"Error updating user in Firebase: {e}")
+    
+    def get_client(self):
+        """Get Firebase client for other modules."""
+        return self.db
 
 
 class Memory:
     """
     Manages bot memory with two tiers:
     - Short-term: Python list (fast, limited to N messages)
-    - Long-term: Firebase Firestore (persistent)
+    - Long-term: Firebase Firestore (persistent, user messages only)
+    
+    Bot's own responses are stored in short-term memory only.
     """
+
+    # Special user ID for bot's own messages
+    BOT_USER_ID = -1
 
     def __init__(self, config: BotConfig, storage: Optional[MemoryStorage] = None):
         """
@@ -100,6 +115,7 @@ class Memory:
         """
         self.config = config
         self._short_term: List[ChatMessage] = []
+        self._bot_name = config.bot_name
         
         # Initialize storage backend
         if storage is not None:
@@ -121,12 +137,18 @@ class Memory:
         """Get short-term memory (for backward compatibility)."""
         return self._short_term
 
+    @property
+    def storage(self) -> Optional[MemoryStorage]:
+        """Get storage backend for other modules."""
+        return self._storage
+
     def add_message(
         self,
         user_id: int,
         username: str,
         text: str,
-        message_id: int
+        message_id: int,
+        save_to_firebase: bool = True
     ) -> ChatMessage:
         """
         Add a new message to both short-term and long-term memory.
@@ -136,6 +158,7 @@ class Memory:
             username: Username or first name
             text: Message text
             message_id: Telegram message ID
+            save_to_firebase: Whether to save to long-term storage (default: True)
             
         Returns:
             Created ChatMessage instance
@@ -156,8 +179,8 @@ class Memory:
         while len(self._short_term) > self.config.short_memory_limit:
             self._short_term.pop(0)
 
-        # Save to long-term storage
-        if self._storage:
+        # Save to long-term storage (only for user messages, not bot responses)
+        if save_to_firebase and self._storage:
             self._storage.save_message(message)
             
             # Update user info
@@ -170,6 +193,26 @@ class Memory:
 
         logger.info(f"Message added - {username}: {text[:50]}")
         return message
+
+    def add_bot_response(self, text: str, message_id: int = 0) -> ChatMessage:
+        """
+        Add bot's own response to short-term memory only.
+        This allows the bot to see what it said previously.
+        
+        Args:
+            text: Bot's response text
+            message_id: Telegram message ID (optional)
+            
+        Returns:
+            Created ChatMessage instance
+        """
+        return self.add_message(
+            user_id=self.BOT_USER_ID,
+            username=self._bot_name,
+            text=text,
+            message_id=message_id,
+            save_to_firebase=False  # Don't save bot responses to Firebase
+        )
 
     def get_recent(self, count: Optional[int] = None) -> List[ChatMessage]:
         """
@@ -188,9 +231,10 @@ class Memory:
     def get_context(self) -> str:
         """
         Format recent messages as context string for DeepSeek API.
+        Includes both user messages and bot's own responses.
 
         Returns:
-            Formatted string like "User1: message text\\nUser2: message text\\n..."
+            Formatted string like "User1: message text\\nBot: response\\n..."
         """
         recent = self.get_recent()
         
@@ -208,3 +252,15 @@ class Memory:
     def get_message_count(self) -> int:
         """Get current number of messages in short-term memory."""
         return len(self._short_term)
+    
+    def get_user_messages_today(self, user_id: int) -> List[ChatMessage]:
+        """
+        Get all messages from a specific user from short-term memory.
+        
+        Args:
+            user_id: Telegram user ID
+            
+        Returns:
+            List of user's messages
+        """
+        return [msg for msg in self._short_term if msg.user_id == user_id]
