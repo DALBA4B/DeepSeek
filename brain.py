@@ -6,11 +6,12 @@ Handles decision-making and response generation using DeepSeek API.
 
 import logging
 import random
-from typing import Optional
+from typing import List, Optional
 
 from openai import OpenAI
 
-import config
+from models import BotConfig, ChatMessage
+from prompts import get_system_prompt, get_context_prompt, BOT_NAME_VARIATIONS, FALLBACK_RESPONSES
 
 logger = logging.getLogger(__name__)
 
@@ -21,83 +22,71 @@ class Brain:
     Makes decisions about when to respond and generates responses.
     """
 
-    SYSTEM_PROMPT = f"""Ты {config.BOT_NAME} - дружелюбный бот-участник группового чата. Ты говоришь как обычный человек с друзьями.
-
-Характер:
-- Дружелюбный, немного саркастичный
-- Интересуешься разговорами в чате
-- Любишь шутки и мемы
-- Маленькими буквами, можно без точек в конце
-- Можешь использовать сленг (кек, лол, имхо, норм, збс и тп)
-- Никаких списков и перечислений
-- Никогда не используй фразы "как AI я..." или "я не могу..."
-
-Форматы ответа (выбери ОДИН):
-1. Обычный текст для нормального ответа
-2. "REACT:<эмодзи>" только для реакции (без текста после)
-3. "GIPHY:<запрос на английском>" для гифки (без текста после)
-4. "STICKER:<эмоция>" для стикера (без текста после)
-
-Доступные стикеры: happy, sad, laugh, cool, think, wtf
-
-Примеры правильных ответов:
-- "кто за пиццу сегодня?" → "я за"
-- "посмотрите какую машину увидел" [фото] → "REACT:🔥"
-- "блин уронил телефон в унитаз" → "GIPHY:facepalm"
-- "сдал экзамен на отлично!" → "STICKER:cool"
-- "че думаете про новый фильм?" → "не смотрел ещё, он зашёл?"
-- "согласны?" → "REACT:👍"
-
-ВАЖНО:
-- Пиши КОРОТКО (1-2 предложения достаточно)
-- Не более 3 предложений в любом случае
-- Не повторяй один и тот же ответ
-"""
-
-    def __init__(self):
-        """Initialize DeepSeek API client."""
+    def __init__(self, config: BotConfig, available_stickers: Optional[List[str]] = None):
+        """
+        Initialize DeepSeek API client.
+        
+        Args:
+            config: Bot configuration
+            available_stickers: List of available sticker emotions for the prompt
+        """
+        self.config = config
+        self._available_stickers = available_stickers or ["happy", "sad", "laugh", "cool", "think", "wtf"]
+        
         try:
             self.client = OpenAI(
-                api_key=config.DEEPSEEK_API_KEY,
-                base_url=config.DEEPSEEK_BASE_URL
+                api_key=config.deepseek_api_key,
+                base_url=config.deepseek_base_url
+            )
+            self._system_prompt = get_system_prompt(
+                config.bot_name, 
+                self._available_stickers
             )
             logger.info("Brain initialized: DeepSeek client ready")
         except Exception as e:
             logger.error(f"Failed to initialize Brain: {e}")
             raise
 
-    def should_respond(self, message_text: str, recent_messages: list = None) -> bool:
+    def should_respond(
+        self, 
+        message_text: str, 
+        recent_messages: Optional[List[ChatMessage]] = None
+    ) -> bool:
         """
         Determine if the bot should respond to a message.
         
-        Conditions:
-        1. Message mentions bot name (case-insensitive)
+        Conditions (in order of priority):
+        1. Message mentions bot name or similar variations (case-insensitive)
         2. Message contains question mark "?"
-        3. Random 10% chance on any message
+        3. Random chance based on config probability
         
         Args:
             message_text: The received message text
-            recent_messages: List of recent messages (for context, unused for now)
+            recent_messages: List of recent messages (for future context-aware decisions)
         
         Returns:
             True if bot should respond, False otherwise
         """
-        # Check if bot name is mentioned (case-insensitive)
-        if config.BOT_NAME.lower() in message_text.lower():
-            logger.info(f"Should respond: bot name mentioned in '{message_text[:50]}'")
-            return True
+        message_lower = message_text.lower()
+        
+        # Check if bot name variations are mentioned
+        for variation in BOT_NAME_VARIATIONS:
+            if variation in message_lower:
+                logger.info(f"Should respond: bot name '{variation}' mentioned")
+                return True
 
         # Check if message contains question mark
         if "?" in message_text:
-            logger.info(f"Should respond: question mark in '{message_text[:50]}'")
+            logger.info("Should respond: question mark detected")
             return True
 
-        # Random 10% chance on any message
-        random_chance = random.random()
-        if random_chance < config.RANDOM_RESPONSE_PROBABILITY:
-            logger.info(f"Should respond: random chance ({random_chance:.2%}) in '{message_text[:50]}'")
+        # Random chance
+        random_value = random.random()
+        if random_value < self.config.random_response_probability:
+            logger.info(f"Should respond: random chance ({random_value:.2%})")
             return True
 
+        logger.debug(f"Should not respond to: {message_text[:50]}")
         return False
 
     def generate_response(self, message_text: str, context: str) -> str:
@@ -112,31 +101,37 @@ class Brain:
             Generated response text (may contain REACT:, GIPHY:, STICKER: prefixes)
         """
         try:
-            # Prepare messages for API
             messages = [
-                {"role": "system", "content": self.SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": f"""Последние сообщения в чате:
-{context}
-
-Новое сообщение для ответа: {message_text}"""
-                }
+                {"role": "system", "content": self._system_prompt},
+                {"role": "user", "content": get_context_prompt(context, message_text)}
             ]
 
-            # Call DeepSeek API
             response = self.client.chat.completions.create(
-                model=config.DEEPSEEK_MODEL,
+                model=self.config.deepseek_model,
                 messages=messages,
-                max_tokens=config.DEEPSEEK_MAX_TOKENS,
-                temperature=config.DEEPSEEK_TEMPERATURE
+                max_tokens=self.config.deepseek_max_tokens,
+                temperature=self.config.deepseek_temperature
             )
 
-            # Extract response text
             answer = response.choices[0].message.content.strip()
             logger.info(f"Generated response: {answer[:50]}")
             return answer
 
         except Exception as e:
             logger.error(f"Error generating response from DeepSeek: {e}")
-            return "Бабки закончились так что ответов больше не будет."  # Fallback response
+            return FALLBACK_RESPONSES["api_error"]
+
+    def update_system_prompt(self, new_prompt: str) -> None:
+        """
+        Update the system prompt dynamically.
+        
+        Args:
+            new_prompt: New system prompt to use
+        """
+        self._system_prompt = new_prompt
+        logger.info("System prompt updated")
+
+    @property
+    def available_stickers(self) -> List[str]:
+        """Get list of available sticker emotions."""
+        return self._available_stickers

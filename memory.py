@@ -6,40 +6,120 @@ Handles both short-term (in-RAM) and long-term (Firebase) memory.
 
 import logging
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Optional
+from abc import ABC, abstractmethod
 
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-import config
+from models import ChatMessage, UserInfo, BotConfig
+from prompts import FALLBACK_RESPONSES
 
 logger = logging.getLogger(__name__)
+
+
+class MemoryStorage(ABC):
+    """Abstract base class for memory storage backends."""
+    
+    @abstractmethod
+    def save_message(self, message: ChatMessage) -> None:
+        """Save a message to storage."""
+        pass
+    
+    @abstractmethod
+    def update_user(self, user: UserInfo) -> None:
+        """Update user information in storage."""
+        pass
+
+
+class FirebaseStorage(MemoryStorage):
+    """Firebase Firestore storage backend."""
+    
+    def __init__(self, cred_path: str):
+        """
+        Initialize Firebase connection.
+        
+        Args:
+            cred_path: Path to Firebase credentials JSON file
+        """
+        try:
+            if not firebase_admin._apps:
+                cred = credentials.Certificate(cred_path)
+                firebase_admin.initialize_app(cred)
+            
+            self.db = firestore.client()
+            logger.info("Firebase storage initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize Firebase: {e}")
+            raise
+    
+    def save_message(self, message: ChatMessage) -> None:
+        """
+        Save message to Firebase messages collection.
+        
+        Args:
+            message: ChatMessage to save
+        """
+        try:
+            self.db.collection('messages').add(message.to_dict())
+            logger.debug(f"Message saved to Firebase: {message.text[:50]}")
+        except Exception as e:
+            logger.error(f"Error saving message to Firebase: {e}")
+    
+    def update_user(self, user: UserInfo) -> None:
+        """
+        Update user info in Firebase users collection.
+        
+        Args:
+            user: UserInfo to update
+        """
+        try:
+            self.db.collection('users').document(str(user.user_id)).set(
+                user.to_dict(),
+                merge=True
+            )
+            logger.debug(f"User updated in Firebase: {user.username}")
+        except Exception as e:
+            logger.error(f"Error updating user in Firebase: {e}")
 
 
 class Memory:
     """
     Manages bot memory with two tiers:
-    - Short-term: Python list (fast, limited to 30 messages)
+    - Short-term: Python list (fast, limited to N messages)
     - Long-term: Firebase Firestore (persistent)
     """
 
-    def __init__(self):
-        """Initialize Firebase connection and short-term memory list."""
-        try:
-            # Initialize Firebase if not already done
-            if not firebase_admin._apps:
-                cred = credentials.Certificate(config.FIREBASE_CRED_PATH)
-                firebase_admin.initialize_app(cred)
-            
-            self.db = firestore.client()
-            self.short_term_memory: List[Dict] = []
-            self.short_memory_limit = config.SHORT_MEMORY_LIMIT
-            
-            logger.info("Memory initialized: Firebase connected, short-term memory ready")
-        except Exception as e:
-            logger.error(f"Failed to initialize Memory: {e}")
-            self.db = None
-            raise
+    def __init__(self, config: BotConfig, storage: Optional[MemoryStorage] = None):
+        """
+        Initialize memory with configuration.
+        
+        Args:
+            config: Bot configuration
+            storage: Optional storage backend (defaults to Firebase)
+        """
+        self.config = config
+        self._short_term: List[ChatMessage] = []
+        
+        # Initialize storage backend
+        if storage is not None:
+            self._storage = storage
+        else:
+            try:
+                self._storage = FirebaseStorage(config.firebase_cred_path)
+            except Exception as e:
+                logger.warning(f"Firebase unavailable, running without long-term memory: {e}")
+                self._storage = None
+        
+        logger.info(
+            f"Memory initialized: short-term limit={config.short_memory_limit}, "
+            f"long-term={'enabled' if self._storage else 'disabled'}"
+        )
+
+    @property
+    def short_term_memory(self) -> List[ChatMessage]:
+        """Get short-term memory (for backward compatibility)."""
+        return self._short_term
 
     def add_message(
         self,
@@ -47,7 +127,7 @@ class Memory:
         username: str,
         text: str,
         message_id: int
-    ) -> None:
+    ) -> ChatMessage:
         """
         Add a new message to both short-term and long-term memory.
 
@@ -56,76 +136,75 @@ class Memory:
             username: Username or first name
             text: Message text
             message_id: Telegram message ID
+            
+        Returns:
+            Created ChatMessage instance
         """
-        try:
-            # Create message object
-            message = {
-                "user_id": user_id,
-                "username": username,
-                "text": text,
-                "message_id": message_id,
-                "timestamp": datetime.now()
-            }
+        # Create message object
+        message = ChatMessage(
+            user_id=user_id,
+            username=username,
+            text=text,
+            message_id=message_id,
+            timestamp=datetime.now()
+        )
 
-            # Add to short-term memory (in-RAM list)
-            self.short_term_memory.append(message)
+        # Add to short-term memory
+        self._short_term.append(message)
+        
+        # Trim if over limit
+        while len(self._short_term) > self.config.short_memory_limit:
+            self._short_term.pop(0)
+
+        # Save to long-term storage
+        if self._storage:
+            self._storage.save_message(message)
             
-            # Remove oldest message if limit exceeded
-            if len(self.short_term_memory) > self.short_memory_limit:
-                self.short_term_memory.pop(0)
+            # Update user info
+            user = UserInfo(
+                user_id=user_id,
+                username=username,
+                last_seen=datetime.now()
+            )
+            self._storage.update_user(user)
 
-            # Save to Firebase long-term memory
-            if self.db:
-                self.db.collection('messages').add({
-                    'user_id': user_id,
-                    'username': username,
-                    'text': text,
-                    'message_id': message_id,
-                    'timestamp': datetime.now()
-                })
+        logger.info(f"Message added - {username}: {text[:50]}")
+        return message
 
-                # Update user info
-                self.db.collection('users').document(str(user_id)).set({
-                    'username': username,
-                    'last_seen': datetime.now()
-                }, merge=True)
-
-                logger.info(f"Message saved - {username}: {text[:50]}")
-            
-        except Exception as e:
-            logger.error(f"Error adding message to memory: {e}")
-
-    def get_recent(self, count: int = 20) -> List[Dict]:
+    def get_recent(self, count: Optional[int] = None) -> List[ChatMessage]:
         """
         Get the most recent messages from short-term memory.
 
         Args:
-            count: Number of messages to retrieve
+            count: Number of messages to retrieve (defaults to context_messages_count)
 
         Returns:
-            List of message dictionaries
+            List of ChatMessage objects
         """
-        return self.short_term_memory[-count:] if self.short_term_memory else []
+        if count is None:
+            count = self.config.context_messages_count
+        return self._short_term[-count:] if self._short_term else []
 
     def get_context(self) -> str:
         """
         Format recent messages as context string for DeepSeek API.
 
         Returns:
-            Formatted string like "User1: message text\nUser2: message text\n..."
+            Formatted string like "User1: message text\\nUser2: message text\\n..."
         """
-        recent = self.get_recent(config.CONTEXT_MESSAGES_COUNT)
+        recent = self.get_recent()
         
         if not recent:
-            return "Нет предыдущих сообщений в чате."
+            return FALLBACK_RESPONSES["no_context"]
 
-        context_lines = []
-        for msg in recent:
-            context_lines.append(f"{msg['username']}: {msg['text']}")
-        
+        context_lines = [msg.to_context_line() for msg in recent]
         return "\n".join(context_lines)
 
     def clear_short_memory(self) -> None:
         """Clear short-term memory (useful for testing)."""
-        self.short_term_memory.clear()
+        self._short_term.clear()
         logger.info("Short-term memory cleared")
+    
+    def get_message_count(self) -> int:
+        """Get current number of messages in short-term memory."""
+        return len(self._short_term)
