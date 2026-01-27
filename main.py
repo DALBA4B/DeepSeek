@@ -14,7 +14,7 @@ from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
 from config import get_config, ConfigError
 from models import BotConfig
-from memory import Memory
+from memory import Memory, RecentResponseTracker
 from brain import Brain
 from responder import Responder, ResponseParser
 from knowledge_graph import KnowledgeGraphManager
@@ -77,6 +77,9 @@ class DeepSeekBot:
         self._app: Optional[Application] = None
         self._running = False
         
+        # Initialize response tracker for anti-repeat functionality
+        self._response_tracker = RecentResponseTracker(max_items=10)
+        
         logger.info("DeepSeekBot initialized with all components")
 
     def _setup_nightly_analysis(self) -> None:
@@ -92,16 +95,20 @@ class DeepSeekBot:
             
             firebase_db = self.memory.storage.get_client() if self.memory.storage else None
             
+            # Check if any data source is available
             if not firebase_db:
-                logger.warning("Firebase not available, nightly analysis disabled")
-                return
+                logger.info("Firebase not available, using RAM memory for nightly analysis")
             
             analyzer = GeminiAnalyzer(gemini_api_key, self.knowledge_manager)
-            collector = DailyMessageCollector(firebase_db)
             
+            # Pass memory to collector for fallback/primary source
+            collector = DailyMessageCollector(firebase_db, memory=self.memory)
+            
+            # Pass memory to task for nightly cleanup
             nightly_task = NightlyAnalysisTask(
                 gemini_analyzer=analyzer,
                 message_collector=collector,
+                memory=self.memory,
                 run_hour=3,
                 run_minute=0
             )
@@ -161,9 +168,11 @@ class DeepSeekBot:
             # Save message to memory
             self.memory.add_message(user_id, username, text, message_id)
 
-            # Check if bot should respond
+            # Check if bot should respond (with conversation continuation support)
             recent = self.memory.get_recent()
-            if not self.brain.should_respond(text, recent):
+            bot_was_recent = self.memory.bot_responded_recently(within_last_n=3)
+            
+            if not self.brain.should_respond(text, recent, bot_responded_recently=bot_was_recent):
                 logger.debug("Bot decided not to respond to this message")
                 return
 
@@ -172,12 +181,13 @@ class DeepSeekBot:
             # Get context for DeepSeek
             context_str = self.memory.get_context()
 
-            # Generate response with personalized context
+            # Generate response with personalized context and avoid list
             response = self.brain.generate_response(
                 text, 
                 context_str,
                 user_id=user_id,
-                username=username
+                username=username,
+                avoid_responses=self._response_tracker.get_avoid_list() if hasattr(self, '_response_tracker') else None
             )
             logger.info(f"Generated response: {response[:50]}")
 
@@ -192,6 +202,11 @@ class DeepSeekBot:
                     text=parsed.content,
                     message_id=0  # Bot responses don't have message IDs in memory
                 )
+                
+                # Track response for anti-repeat
+                if hasattr(self, '_response_tracker'):
+                    self._response_tracker.add_response(parsed.response_type.value, parsed.content)
+                
                 logger.debug("Bot response saved to short-term memory")
 
         except Exception as e:
@@ -216,6 +231,22 @@ class DeepSeekBot:
         """
         logger.info("Startup handler called - starting scheduler...")
         await self.scheduler.start()
+        
+        # Load sticker pack
+        try:
+            sticker_pack_name = "userpack7845974bystickrubot"
+            logger.info(f"Loading sticker pack '{sticker_pack_name}'...")
+            
+            # Access sticker manager from responder
+            if hasattr(self.responder, 'sticker_manager'):
+                await self.responder.sticker_manager.load_sticker_set(app.bot, sticker_pack_name)
+                logger.info("Sticker pack loaded successfully")
+            else:
+                logger.warning("Responder does not have sticker_manager attribute")
+                
+        except Exception as e:
+            logger.error(f"Failed to load sticker pack: {e}")
+            
         logger.info("Message handler registered")
         logger.info("Bot is running... Press Ctrl+C to stop")
         logger.info("=" * 50)

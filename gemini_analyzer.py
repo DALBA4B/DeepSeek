@@ -95,7 +95,7 @@ class GeminiAnalyzer:
         
         try:
             genai.configure(api_key=api_key)
-            self._model = genai.GenerativeModel('gemini-pro')
+            self._model = genai.GenerativeModel('gemini-2.0-flash')
             logger.info("GeminiAnalyzer initialized")
         except Exception as e:
             logger.error(f"Failed to initialize Gemini: {e}")
@@ -282,17 +282,20 @@ class GeminiAnalyzer:
 
 class DailyMessageCollector:
     """
-    Collects messages from Firebase for daily analysis.
+    Collects messages for daily analysis.
+    Sources: Firebase (preferred) or RAM Memory (fallback).
     """
     
-    def __init__(self, firebase_db):
+    def __init__(self, firebase_db, memory: Optional[Any] = None):
         """
         Initialize collector.
         
         Args:
-            firebase_db: Firebase Firestore client
+            firebase_db: Firebase Firestore client (optional)
+            memory: Memory instance (optional)
         """
         self._db = firebase_db
+        self._memory = memory
     
     def get_yesterday_messages(self) -> Dict[int, List[ChatMessage]]:
         """
@@ -301,49 +304,82 @@ class DailyMessageCollector:
         Returns:
             Dictionary mapping user_id to list of their messages
         """
-        if not self._db:
-            logger.warning("Firebase not available")
-            return {}
-        
-        try:
-            # Calculate yesterday's date range
-            now = datetime.now()
-            yesterday_start = datetime(now.year, now.month, now.day) - timedelta(days=1)
-            yesterday_end = yesterday_start + timedelta(days=1)
-            
-            # Query messages from yesterday
-            messages_ref = self._db.collection('messages')
-            query = messages_ref.where(
-                'timestamp', '>=', yesterday_start
-            ).where(
-                'timestamp', '<', yesterday_end
-            ).order_by('timestamp')
-            
-            docs = query.stream()
-            
-            # Group by user
-            messages_by_user: Dict[int, List[ChatMessage]] = {}
-            
-            for doc in docs:
-                data = doc.to_dict()
-                user_id = data.get('user_id')
+        # 1. Try Firebase (Persistent)
+        if self._db:
+            try:
+                # Calculate yesterday's date range
+                now = datetime.now()
+                yesterday_start = datetime(now.year, now.month, now.day) - timedelta(days=1)
+                yesterday_end = yesterday_start + timedelta(days=1)
                 
-                if user_id:
-                    message = ChatMessage(
-                        user_id=user_id,
-                        username=data.get('username', 'Unknown'),
-                        text=data.get('text', ''),
-                        message_id=data.get('message_id', 0),
-                        timestamp=data.get('timestamp', datetime.now())
-                    )
+                # Query messages from yesterday
+                messages_ref = self._db.collection('messages')
+                query = messages_ref.where(
+                    'timestamp', '>=', yesterday_start
+                ).where(
+                    'timestamp', '<', yesterday_end
+                ).order_by('timestamp')
+                
+                docs = query.stream()
+                
+                # Group by user
+                messages_by_user: Dict[int, List[ChatMessage]] = {}
+                
+                for doc in docs:
+                    data = doc.to_dict()
+                    user_id = data.get('user_id')
                     
-                    if user_id not in messages_by_user:
-                        messages_by_user[user_id] = []
-                    messages_by_user[user_id].append(message)
-            
-            logger.info(f"Collected {sum(len(m) for m in messages_by_user.values())} messages from yesterday")
-            return messages_by_user
-            
-        except Exception as e:
-            logger.error(f"Error collecting yesterday's messages: {e}")
-            return {}
+                    if user_id:
+                        message = ChatMessage(
+                            user_id=user_id,
+                            username=data.get('username', 'Unknown'),
+                            text=data.get('text', ''),
+                            message_id=data.get('message_id', 0),
+                            timestamp=data.get('timestamp', datetime.now())
+                        )
+                        
+                        if user_id not in messages_by_user:
+                            messages_by_user[user_id] = []
+                        messages_by_user[user_id].append(message)
+                
+                logger.info(f"Collected {sum(len(m) for m in messages_by_user.values())} messages from Firebase")
+                return messages_by_user
+                
+            except Exception as e:
+                logger.error(f"Error collecting from Firebase: {e}")
+                # Fallback to RAM if Firebase fails? 
+                # Better to separate: if DB configured but failed -> error.
+                # If DB not configured -> RAM.
+        
+        # 2. Try RAM Memory (Volatile)
+        if self._memory:
+            try:
+                # Use daily log functionality
+                # Logic: If running at 3:00 AM, we want "yesterday" (00:00-23:59 previous day)
+                # Does RAM contain it? 
+                # If we prune >24h, we have ~48h.
+                now = datetime.now()
+                yesterday_start = datetime(now.year, now.month, now.day) - timedelta(days=1)
+                yesterday_end = yesterday_start + timedelta(days=1)
+                
+                messages = self._memory.get_daily_log()
+                
+                messages_by_user = {}
+                count = 0
+                for msg in messages:
+                    # Filter for yesterday's range
+                    if yesterday_start <= msg.timestamp < yesterday_end:
+                        if msg.user_id not in messages_by_user:
+                            messages_by_user[msg.user_id] = []
+                        messages_by_user[msg.user_id].append(msg)
+                        count += 1
+                
+                logger.info(f"Collected {count} messages from RAM Memory")
+                return messages_by_user
+                
+            except Exception as e:
+                logger.error(f"Error collecting from RAM: {e}")
+                return {}
+
+        logger.warning("No data source available for daily analysis (Firebase or Memory)")
+        return {}

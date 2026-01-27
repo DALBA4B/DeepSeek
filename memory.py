@@ -6,8 +6,9 @@ Now includes bot's own responses in short-term memory.
 """
 
 import logging
+from collections import deque
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Deque
 from abc import ABC, abstractmethod
 
 import firebase_admin
@@ -17,6 +18,77 @@ from models import ChatMessage, UserInfo, BotConfig
 from prompts import FALLBACK_RESPONSES
 
 logger = logging.getLogger(__name__)
+
+
+class RecentResponseTracker:
+    """
+    Tracks recent bot responses to avoid repetition.
+    Stores last N emojis, gifs queries, and text snippets.
+    """
+    
+    def __init__(self, max_items: int = 10):
+        """
+        Initialize tracker.
+        
+        Args:
+            max_items: Maximum items to track per category
+        """
+        self._emojis: Deque[str] = deque(maxlen=max_items)
+        self._gifs: Deque[str] = deque(maxlen=max_items)
+        self._texts: Deque[str] = deque(maxlen=max_items)
+        self._all_responses: Deque[str] = deque(maxlen=max_items * 2)
+    
+    def add_response(self, response_type: str, content: str) -> None:
+        """
+        Add a response to the tracker.
+        
+        Args:
+            response_type: Type of response (text, reaction, gif, sticker)
+            content: The response content
+        """
+        self._all_responses.append(content)
+        
+        if response_type == "reaction":
+            self._emojis.append(content)
+        elif response_type == "gif":
+            self._gifs.append(content.lower())
+        elif response_type == "text":
+            # Store first 50 chars for comparison
+            self._texts.append(content[:50].lower())
+    
+    def is_recently_used(self, response_type: str, content: str) -> bool:
+        """
+        Check if a response was recently used.
+        
+        Args:
+            response_type: Type of response
+            content: Content to check
+            
+        Returns:
+            True if recently used
+        """
+        if response_type == "reaction":
+            return content in self._emojis
+        elif response_type == "gif":
+            return content.lower() in self._gifs
+        elif response_type == "text":
+            return content[:50].lower() in self._texts
+        return False
+    
+    def get_avoid_list(self) -> List[str]:
+        """Get list of recent responses to avoid."""
+        return list(self._all_responses)
+    
+    def get_recent_emojis(self) -> List[str]:
+        """Get recently used emojis."""
+        return list(self._emojis)
+    
+    def clear(self) -> None:
+        """Clear all tracked responses."""
+        self._emojis.clear()
+        self._gifs.clear()
+        self._texts.clear()
+        self._all_responses.clear()
 
 
 class MemoryStorage(ABC):
@@ -114,8 +186,11 @@ class Memory:
             storage: Optional storage backend (defaults to Firebase)
         """
         self.config = config
-        self._short_term: List[ChatMessage] = []
+        self._short_term: Deque[ChatMessage] = deque(maxlen=config.short_memory_limit)
         self._bot_name = config.bot_name
+        
+        # Daily log for nightly analysis (stores all messages for the current day)
+        self._daily_log: List[ChatMessage] = []
         
         # Initialize storage backend
         if storage is not None:
@@ -129,11 +204,12 @@ class Memory:
         
         logger.info(
             f"Memory initialized: short-term limit={config.short_memory_limit}, "
-            f"long-term={'enabled' if self._storage else 'disabled'}"
+            f"long-term={'enabled' if self._storage else 'disabled'}, "
+            f"daily-log=enabled"
         )
 
     @property
-    def short_term_memory(self) -> List[ChatMessage]:
+    def short_term_memory(self) -> Deque[ChatMessage]:
         """Get short-term memory (for backward compatibility)."""
         return self._short_term
 
@@ -172,12 +248,11 @@ class Memory:
             timestamp=datetime.now()
         )
 
-        # Add to short-term memory
+        # Add to short-term memory (deque auto-trims to maxlen)
         self._short_term.append(message)
         
-        # Trim if over limit
-        while len(self._short_term) > self.config.short_memory_limit:
-            self._short_term.pop(0)
+        # Add to daily log (keeps growing until nightly clear)
+        self._daily_log.append(message)
 
         # Save to long-term storage (only for user messages, not bot responses)
         if save_to_firebase and self._storage:
@@ -226,7 +301,9 @@ class Memory:
         """
         if count is None:
             count = self.config.context_messages_count
-        return self._short_term[-count:] if self._short_term else []
+        # Convert deque to list for slicing (deque doesn't support slice indexing)
+        messages_list = list(self._short_term)
+        return messages_list[-count:] if messages_list else []
 
     def get_context(self) -> str:
         """
@@ -255,7 +332,8 @@ class Memory:
     
     def get_user_messages_today(self, user_id: int) -> List[ChatMessage]:
         """
-        Get all messages from a specific user from short-term memory.
+        Get all messages from a specific user for the current day.
+        Retrieves from _daily_log ensuring full day context.
         
         Args:
             user_id: Telegram user ID
@@ -263,4 +341,58 @@ class Memory:
         Returns:
             List of user's messages
         """
+        if hasattr(self, '_daily_log'):
+            return [msg for msg in self._daily_log if msg.user_id == user_id]
         return [msg for msg in self._short_term if msg.user_id == user_id]
+    
+    def bot_responded_recently(self, within_last_n: int = 3) -> bool:
+        """
+        Check if the bot responded within the last N messages.
+        Used for conversation continuation without name mention.
+        
+        Args:
+            within_last_n: Number of messages to look back
+            
+        Returns:
+            True if bot responded recently
+        """
+        recent = list(self._short_term)[-within_last_n:]
+        return any(msg.user_id == self.BOT_USER_ID for msg in recent)
+    
+    def get_last_bot_response(self) -> Optional[str]:
+        """
+        Get the last response from the bot.
+        
+        Returns:
+            Last bot response text or None
+        """
+        for msg in reversed(list(self._short_term)):
+            if msg.user_id == self.BOT_USER_ID:
+                return msg.text
+        return None
+
+    def get_daily_log(self) -> List[ChatMessage]:
+        """
+        Get all messages from daily log.
+        
+        Returns:
+            List of all messages from today
+        """
+        if hasattr(self, '_daily_log'):
+            return list(self._daily_log)
+        return []
+
+    def clear_daily_log(self) -> None:
+        """
+        Clear daily log of messages older than 24 hours (or since last midnight).
+        Used to prevent RAM from growing indefinitely.
+        """
+        if hasattr(self, '_daily_log'):
+            # Keep messages from current day (since midnight)
+            today_midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            
+            # Filter in place
+            self._daily_log = [msg for msg in self._daily_log if msg.timestamp >= today_midnight]
+            
+            self._last_log_clear = datetime.now()
+            logger.info(f"Daily log pruned. Retained {len(self._daily_log)} messages.")

@@ -7,7 +7,7 @@ Handles scheduled tasks like nightly Gemini analysis.
 import asyncio
 import logging
 from datetime import datetime, time, timedelta
-from typing import Callable, Optional, Awaitable
+from typing import Callable, Optional, Awaitable, Any
 import pytz
 
 logger = logging.getLogger(__name__)
@@ -160,6 +160,7 @@ class NightlyAnalysisTask:
         self, 
         gemini_analyzer,
         message_collector,
+        memory: Optional[Any] = None,
         run_hour: int = 3,
         run_minute: int = 0
     ):
@@ -169,11 +170,13 @@ class NightlyAnalysisTask:
         Args:
             gemini_analyzer: GeminiAnalyzer instance
             message_collector: DailyMessageCollector instance
+            memory: Memory instance (optional) for cleanup
             run_hour: Hour to run (default: 3 AM)
             run_minute: Minute to run (default: 0)
         """
         self._analyzer = gemini_analyzer
         self._collector = message_collector
+        self._memory = memory
         self.run_hour = run_hour
         self.run_minute = run_minute
     
@@ -181,17 +184,23 @@ class NightlyAnalysisTask:
         """Run the nightly analysis."""
         logger.info("Starting nightly analysis task")
         
-        # Collect yesterday's messages
-        messages_by_user = self._collector.get_yesterday_messages()
-        
-        if not messages_by_user:
-            logger.info("No messages to analyze from yesterday")
-            return
-        
-        # Run analysis
-        results = await self._analyzer.run_nightly_analysis(messages_by_user)
-        
-        logger.info(f"Nightly analysis complete. Updated {len(results)} user profiles.")
+        try:
+            # Collect yesterday's messages
+            messages_by_user = self._collector.get_yesterday_messages()
+            
+            if messages_by_user:
+                # Run analysis
+                results = await self._analyzer.run_nightly_analysis(messages_by_user)
+                logger.info(f"Nightly analysis complete. Updated {len(results)} user profiles.")
+            else:
+                logger.info("No messages to analyze from yesterday")
+            
+            # Prune daily log in memory (remove analyzed messages)
+            if self._memory:
+                self._memory.clear_daily_log()
+                
+        except Exception as e:
+            logger.error(f"Error in nightly analysis task: {e}")
     
     def register(self, scheduler: TaskScheduler) -> None:
         """

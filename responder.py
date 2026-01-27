@@ -9,6 +9,7 @@ import random
 from typing import Dict, Optional
 
 import aiohttp
+from aiohttp import ClientTimeout
 from telegram import Bot, Message, ReactionTypeEmoji
 from telegram.error import TelegramError
 
@@ -29,6 +30,7 @@ class ResponseParser:
     def parse(cls, response_text: str) -> ParsedResponse:
         """
         Parse the response to determine its type and content.
+        Case-insensitive check for prefixes.
         
         Args:
             response_text: The response from DeepSeek (may be in special format)
@@ -37,18 +39,19 @@ class ResponseParser:
             ParsedResponse with type and content
         """
         text = response_text.strip()
+        text_upper = text.upper()
 
-        if text.startswith(cls.PREFIX_GIPHY):
+        if text_upper.startswith(cls.PREFIX_GIPHY):
             content = text[len(cls.PREFIX_GIPHY):].strip()
             logger.info(f"Parsed GIPHY response: {content}")
             return ParsedResponse(ResponseType.GIF, content)
 
-        if text.startswith(cls.PREFIX_REACT):
+        if text_upper.startswith(cls.PREFIX_REACT):
             content = text[len(cls.PREFIX_REACT):].strip()
             logger.info(f"Parsed REACT response: {content}")
             return ParsedResponse(ResponseType.REACTION, content)
 
-        if text.startswith(cls.PREFIX_STICKER):
+        if text_upper.startswith(cls.PREFIX_STICKER):
             content = text[len(cls.PREFIX_STICKER):].strip().lower()
             logger.info(f"Parsed STICKER response: {content}")
             return ParsedResponse(ResponseType.STICKER, content)
@@ -91,7 +94,7 @@ class GiphyClient:
         
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(self.api_url, params=params, timeout=5) as response:
+                async with session.get(self.api_url, params=params, timeout=ClientTimeout(total=5)) as response:
                     response.raise_for_status()
                     data = await response.json()
                     
@@ -113,55 +116,58 @@ class GiphyClient:
 class StickerManager:
     """Manages sticker file IDs and sending."""
     
-    # Default sticker mapping (emotion -> file_id)
+    # Default sticker mapping (emotion -> file_id) - kept as backup
     DEFAULT_STICKERS: Dict[str, str] = {
         'happy': 'CAACAgIAAxkBAAEQUVxpdIeyvxepv5LBpDDNIWszpN8JJQAC85oAAgRqgUshcX0t9I5SSDgE',
-        'sad': '',
-        'laugh': '',
-        'cool': '',
-        'think': '',
-        'wtf': ''
     }
     
     def __init__(self, custom_stickers: Optional[Dict[str, str]] = None):
         """
         Initialize sticker manager.
-        
-        Args:
-            custom_stickers: Optional custom sticker mapping to merge with defaults
         """
         self._stickers = self.DEFAULT_STICKERS.copy()
         if custom_stickers:
             self._stickers.update(custom_stickers)
+            
+        self._sticker_set_name: Optional[str] = None
+        self._all_stickers: List[str] = []
+        
+    async def load_sticker_set(self, bot: Bot, set_name: str) -> None:
+        """
+        Load all stickers from a specific sticker set.
+        
+        Args:
+            bot: Telegram Bot instance
+            set_name: Name of the sticker set (e.g. 'userpack...')
+        """
+        try:
+            self._sticker_set_name = set_name
+            sticker_set = await bot.get_sticker_set(set_name)
+            
+            self._all_stickers = [sticker.file_id for sticker in sticker_set.stickers]
+            logger.info(f"Loaded {len(self._all_stickers)} stickers from set '{set_name}'")
+            
+        except Exception as e:
+            logger.error(f"Failed to load sticker set '{set_name}': {e}")
     
     def get_file_id(self, emotion: str) -> Optional[str]:
         """
-        Get sticker file_id for an emotion.
-        
-        Args:
-            emotion: Emotion name (e.g., 'happy', 'sad')
-            
-        Returns:
-            File ID or None if not found/empty
+        Get a sticker. If a full set is loaded, return a random one from the set.
+        Otherwise try to find specific emotion mapping.
         """
+        # 1. If full set loaded, return random sticker (User Preference)
+        if self._all_stickers:
+            return random.choice(self._all_stickers)
+            
+        # 2. Fallback to manual mapping
         file_id = self._stickers.get(emotion.lower().strip(), '')
         return file_id if file_id else None
-    
-    def add_sticker(self, emotion: str, file_id: str) -> None:
-        """
-        Add or update a sticker mapping.
-        
-        Args:
-            emotion: Emotion name
-            file_id: Telegram sticker file ID
-        """
-        self._stickers[emotion.lower().strip()] = file_id
-        logger.info(f"Sticker added: {emotion} -> {file_id[:20]}...")
-    
-    @property
-    def available_emotions(self) -> list:
-        """Get list of emotions with available stickers."""
-        return [k for k, v in self._stickers.items() if v]
+
+    def get_random_sticker(self) -> Optional[str]:
+        """Get a random sticker from the loaded set."""
+        if self._all_stickers:
+            return random.choice(self._all_stickers)
+        return None
 
 
 class Responder:
@@ -290,7 +296,7 @@ class Responder:
     async def _send_gif(self, message: Message, search_query: str, bot: Bot) -> bool:
         """
         Search Giphy API and send a random GIF.
-        Falls back to text if GIF not found.
+        Falls back to text action if GIF not found.
         
         Args:
             message: Message to reply to
@@ -313,14 +319,22 @@ class Responder:
             except TelegramError as e:
                 logger.error(f"Error sending animation: {e}")
         
-        # Fallback to text
-        logger.info(f"GIF fallback to text: {search_query}")
-        return await self._send_text(message, search_query)
+        # Fallback to natural text
+        fallback_phrases = [
+            "чет гифка не грузится(",
+            "не нашел подходящую гифку, но представь что тут смешно",
+            "гифки сломались, но я всё равно ржу",
+            "🤷‍♂️ не нашел гифку",
+            "лан, без гифки обойдемся"
+        ]
+        fallback_text = random.choice(fallback_phrases)
+        logger.info(f"GIF fallback to text: {fallback_text}")
+        return await self._send_text(message, fallback_text)
 
     async def _send_sticker(self, message: Message, emotion: str, bot: Bot) -> bool:
         """
         Send a sticker based on emotion.
-        Falls back to text if sticker file_id not available.
+        Falls back to emoji or text action if sticker file_id not available.
         
         Args:
             message: Message to reply to
@@ -343,9 +357,19 @@ class Responder:
             except TelegramError as e:
                 logger.error(f"Error sending sticker: {e}")
 
-        # Fallback to text
-        logger.info(f"Sticker fallback to text: {emotion}")
-        return await self._send_text(message, emotion)
+        # Fallback to emoji or text action
+        emoji_map = {
+            'happy': '😄',
+            'sad': '😢',
+            'laugh': '😂',
+            'cool': '😎',
+            'think': '🤔',
+            'wtf': '🤨'
+        }
+        
+        fallback_text = emoji_map.get(emotion.lower(), f"*стикер: {emotion}*")
+        logger.info(f"Sticker fallback to text: {fallback_text}")
+        return await self._send_text(message, fallback_text)
 
     @property
     def sticker_manager(self) -> StickerManager:
