@@ -241,9 +241,13 @@ class DeepSeekBot:
                 text=f"🔄 Analyzing {len(daily_messages)} messages from today...\n⏳ This may take a moment..."
             )
             
-            # Group messages by user
+            # Group messages by user (exclude bot messages - user_id == -1)
             users_data: dict = {}
             for msg in daily_messages:
+                # Skip bot's own messages
+                if msg.user_id == -1:
+                    continue
+                    
                 if msg.user_id not in users_data:
                     users_data[msg.user_id] = {"username": msg.username, "messages": []}
                 users_data[msg.user_id]["messages"].append(msg)
