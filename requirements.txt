@@ -7,8 +7,8 @@ firebase-admin>=6.0.0
 # HTTP client (async)
 aiohttp>=3.9.0
 
-# Gemini API for nightly analysis
-google-generativeai>=0.3.0
+# DeepSeek API for analysis (via OpenAI client)
+# openai already included above
 
 # Timezone support for scheduler
 pytz>=2023.3

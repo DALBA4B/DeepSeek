@@ -1,7 +1,7 @@
 # scheduler.py
 """
 Task scheduler for the DeepSeek Telegram bot.
-Handles scheduled tasks like nightly Gemini analysis.
+Handles scheduled tasks like nightly DeepSeek analysis.
 """
 
 import asyncio
@@ -153,7 +153,7 @@ class TaskScheduler:
 
 class NightlyAnalysisTask:
     """
-    Nightly analysis task that runs Gemini analyzer.
+    Nightly analysis task that runs DeepSeek analyzer.
     """
     
     def __init__(
@@ -168,7 +168,7 @@ class NightlyAnalysisTask:
         Initialize nightly analysis task.
         
         Args:
-            gemini_analyzer: GeminiAnalyzer instance
+            gemini_analyzer: DeepSeekAnalyzer instance
             message_collector: DailyMessageCollector instance
             memory: Memory instance (optional) for cleanup
             run_hour: Hour to run (default: 3 AM)

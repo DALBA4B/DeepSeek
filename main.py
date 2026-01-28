@@ -71,10 +71,10 @@ class DeepSeekBot:
         # Initialize scheduler
         self.scheduler = scheduler or TaskScheduler(timezone="Europe/Kiev")
         
-        # Initialize Gemini analyzer (will be set in _setup_nightly_analysis if available)
+        # Initialize DeepSeek analyzer (will be set in _setup_nightly_analysis if available)
         self.gemini_analyzer = None
         
-        # Setup nightly analysis if Gemini API key is available
+        # Setup nightly analysis if DeepSeek API key is available
         self._setup_nightly_analysis()
         
         self._app: Optional[Application] = None
@@ -86,15 +86,15 @@ class DeepSeekBot:
         logger.info("DeepSeekBot initialized with all components")
 
     def _setup_nightly_analysis(self) -> None:
-        """Setup nightly Gemini analysis task if API key is available."""
-        gemini_api_key = getattr(self.config, 'gemini_api_key', None)
+        """Setup nightly DeepSeek analysis task if API key is available."""
+        deepseek_api_key = self.config.deepseek_api_key
         
-        if not gemini_api_key:
-            logger.info("Gemini API key not configured, nightly analysis disabled")
+        if not deepseek_api_key:
+            logger.info("DeepSeek API key not configured, nightly analysis disabled")
             return
         
         try:
-            from gemini_analyzer import GeminiAnalyzer, DailyMessageCollector
+            from deepseek_analyzer import DeepSeekAnalyzer, DailyMessageCollector
             
             firebase_db = self.memory.storage.get_client() if self.memory.storage else None
             
@@ -102,7 +102,7 @@ class DeepSeekBot:
             if not firebase_db:
                 logger.info("Firebase not available, using RAM memory for nightly analysis")
             
-            analyzer = GeminiAnalyzer(gemini_api_key, self.knowledge_manager)
+            analyzer = DeepSeekAnalyzer(deepseek_api_key, self.knowledge_manager)
             
             # Save analyzer for /analyze command
             self.gemini_analyzer = analyzer
@@ -218,9 +218,58 @@ class DeepSeekBot:
         except Exception as e:
             logger.error(f"Error handling message: {e}", exc_info=True)
 
+    async def _cmd_daily_log(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """
+        Handle /daily_log command to show all messages from today.
+        Useful for debugging and verifying daily memory works.
+        """
+        if not update.effective_chat or not update.message:
+            return
+        
+        chat_id = update.effective_chat.id
+        
+        try:
+            daily_messages = self.memory.get_daily_log()
+            
+            if not daily_messages:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="📋 Daily log is empty"
+                )
+                return
+            
+            # Group by user
+            users_data = {}
+            for msg in daily_messages:
+                if msg.user_id not in users_data:
+                    users_data[msg.user_id] = {"username": msg.username, "count": 0, "messages": []}
+                users_data[msg.user_id]["count"] += 1
+                users_data[msg.user_id]["messages"].append(f"[{msg.timestamp.strftime('%H:%M')}] {msg.text[:50]}")
+            
+            # Format output
+            lines = [f"📋 Daily Log ({len(daily_messages)} messages total)\n"]
+            
+            for uid, data in users_data.items():
+                user_type = "🤖 Bot" if uid == -1 else f"👤 {data['username']}"
+                lines.append(f"\n{user_type}: {data['count']} messages")
+                for msg in data['messages'][:3]:  # Show first 3 messages
+                    lines.append(f"  • {msg}")
+                if len(data['messages']) > 3:
+                    lines.append(f"  ... and {len(data['messages']) - 3} more")
+            
+            text = "\n".join(lines)
+            await context.bot.send_message(chat_id=chat_id, text=text)
+            
+        except Exception as e:
+            logger.error(f"Error in daily_log command: {e}", exc_info=True)
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"❌ Error: {str(e)[:100]}"
+            )
+
     async def _cmd_analyze(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """
-        Handle /analyze command to manually trigger Gemini analysis.
+        Handle /analyze command to manually trigger DeepSeek analysis.
         Shows detailed analysis results for all users in daily log.
         """
         if not update.effective_chat or not update.message:
@@ -255,7 +304,7 @@ class DeepSeekBot:
             # Analyze each user
             results = []
             detailed_results = []
-            from gemini_analyzer import GeminiAnalyzer
+            from deepseek_analyzer import DeepSeekAnalyzer
             
             logger.info(f"Gemini analyzer available: {hasattr(self, 'gemini_analyzer') and self.gemini_analyzer is not None}")
             
@@ -269,8 +318,9 @@ class DeepSeekBot:
                         messages=data['messages']
                     )
                     if graph:
+                        # Get new facts count from graph (analyzer.new_facts is not available, so check via graph comparison)
                         results.append(f"✅ {data['username']}: {len(data['messages'])} msgs")
-                        detailed_results.append(self._format_analysis_details(data['username'], graph))
+                        detailed_results.append(self._format_analysis_details(data['username'], graph, show_only_new=True))
                     else:
                         results.append(f"⚠️ {data['username']}: Analysis failed")
                 
@@ -295,7 +345,7 @@ class DeepSeekBot:
             else:
                 await context.bot.send_message(
                     chat_id=chat_id,
-                    text="❌ Gemini analyzer not available"
+                    text="❌ DeepSeek analyzer not available"
                 )
         
         except Exception as e:
@@ -305,69 +355,33 @@ class DeepSeekBot:
                 text=f"❌ Analysis error: {str(e)[:100]}"
             )
 
-    def _format_analysis_details(self, username: str, graph) -> str:
+    def _format_analysis_details(self, username: str, graph, show_only_new: bool = False) -> str:
         """
-        Format knowledge graph into readable message.
+        Format knowledge graph into readable message - only facts and interests.
         
         Args:
             username: User's username
             graph: UserKnowledgeGraph object
+            show_only_new: If True, show only newly discovered facts
             
         Returns:
             Formatted HTML string with analysis details
         """
-        lines = [f"<b>📊 Analysis for {username}</b>"]
+        lines = [f"<b>📊 {username}</b>"]
         
-        # Quick facts
-        if graph.quick_facts:
-            lines.append(f"\n<b>💡 Quick Facts ({len(graph.quick_facts)}):</b>")
-            for fact in graph.quick_facts[:5]:  # Show top 5
-                lines.append(f"  • {fact[:80]}")
-            if len(graph.quick_facts) > 5:
-                lines.append(f"  ... and {len(graph.quick_facts) - 5} more")
+        # Quick facts - show only new ones if requested
+        facts_to_show = getattr(graph, 'new_facts', graph.quick_facts) if show_only_new else graph.quick_facts
         
-        # Interests by category
+        if facts_to_show:
+            for fact in facts_to_show:
+                lines.append(f"  • {fact}")
+        
+        # All interests by category (no arbitrary limits)
         if graph.interests:
-            lines.append(f"\n<b>🎯 Interests ({len(graph.interests)} categories):</b>")
             for category, items in graph.interests.items():
                 if items:
-                    item_names = ", ".join(list(items.keys())[:3])
+                    item_names = ", ".join(items.keys())
                     lines.append(f"  <b>{category}:</b> {item_names}")
-                    if len(items) > 3:
-                        lines.append(f"    ({len(items) - 3} more in {category})")
-        
-        # Personal info
-        if graph.personal:
-            lines.append(f"\n<b>👤 Personal Info:</b>")
-            for key, value in list(graph.personal.items())[:3]:
-                value_str = str(value)[:60] if value else "Unknown"
-                lines.append(f"  • {key}: {value_str}")
-            if len(graph.personal) > 3:
-                lines.append(f"  ... and {len(graph.personal) - 3} more attributes")
-        
-        # Social info
-        if graph.social:
-            lines.append(f"\n<b>👥 Social:</b>")
-            if "friends_mentioned" in graph.social and graph.social["friends_mentioned"]:
-                friends = graph.social["friends_mentioned"]
-                lines.append(f"  Friends: {', '.join(friends[:3])}")
-                if len(friends) > 3:
-                    lines.append(f"  ({len(friends) - 3} more friends)")
-            for key in ["relationship_status", "family"]:
-                if key in graph.social and graph.social[key]:
-                    lines.append(f"  • {key}: {graph.social[key]}")
-        
-        # Patterns
-        if graph.active_hours or graph.typical_topics:
-            lines.append(f"\n<b>📈 Patterns:</b>")
-            if graph.active_hours:
-                hours_str = f"{min(graph.active_hours)}:00 - {max(graph.active_hours)}:00" if len(graph.active_hours) > 1 else f"{graph.active_hours[0]}:00"
-                lines.append(f"  Active: {hours_str}")
-            if graph.typical_topics:
-                topics = ", ".join(graph.typical_topics[:3])
-                lines.append(f"  Topics: {topics}")
-        
-        lines.append(f"\n⏰ <i>Updated: {graph.updated_at.strftime('%H:%M:%S')}</i>")
         
         return "\n".join(lines)
 
@@ -447,6 +461,10 @@ class DeepSeekBot:
             # Add /analyze command handler
             analyze_handler = CommandHandler("analyze", self._cmd_analyze)
             self._app.add_handler(analyze_handler)
+            
+            # Add /daily_log command handler
+            daily_log_handler = CommandHandler("daily_log", self._cmd_daily_log)
+            self._app.add_handler(daily_log_handler)
 
             # Register startup and shutdown handlers
             self._app.post_init = self._startup_handler
