@@ -10,6 +10,7 @@ from collections import deque
 from datetime import datetime
 from typing import List, Optional, Deque
 from abc import ABC, abstractmethod
+import json
 
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -118,11 +119,19 @@ class FirebaseStorage(MemoryStorage):
         Initialize Firebase connection.
         
         Args:
-            cred_path: Path to Firebase credentials JSON file
+            cred_path: Path to Firebase credentials JSON file or JSON string
         """
         try:
             if not firebase_admin._apps:
-                cred = credentials.Certificate(cred_path)
+                # Check if cred_path is JSON string (starts with '{') or file path
+                if cred_path.strip().startswith('{'):
+                    # It's a JSON string, parse it
+                    cred_dict = json.loads(cred_path)
+                    cred = credentials.Certificate(cred_dict)
+                else:
+                    # It's a file path
+                    cred = credentials.Certificate(cred_path)
+                
                 firebase_admin.initialize_app(cred)
             
             self.db = firestore.client()

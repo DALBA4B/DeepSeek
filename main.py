@@ -71,6 +71,9 @@ class DeepSeekBot:
         # Initialize scheduler
         self.scheduler = scheduler or TaskScheduler(timezone="Europe/Kiev")
         
+        # Initialize Gemini analyzer (will be set in _setup_nightly_analysis if available)
+        self.gemini_analyzer = None
+        
         # Setup nightly analysis if Gemini API key is available
         self._setup_nightly_analysis()
         
@@ -100,6 +103,9 @@ class DeepSeekBot:
                 logger.info("Firebase not available, using RAM memory for nightly analysis")
             
             analyzer = GeminiAnalyzer(gemini_api_key, self.knowledge_manager)
+            
+            # Save analyzer for /analyze command
+            self.gemini_analyzer = analyzer
             
             # Pass memory to collector for fallback/primary source
             collector = DailyMessageCollector(firebase_db, memory=self.memory)
@@ -247,7 +253,9 @@ class DeepSeekBot:
             detailed_results = []
             from gemini_analyzer import GeminiAnalyzer
             
-            if hasattr(self, 'gemini_analyzer'):
+            logger.info(f"Gemini analyzer available: {hasattr(self, 'gemini_analyzer') and self.gemini_analyzer is not None}")
+            
+            if hasattr(self, 'gemini_analyzer') and self.gemini_analyzer is not None:
                 analyzer = self.gemini_analyzer
                 for uid, data in users_data.items():
                     logger.info(f"Analyzing {len(data['messages'])} messages for {data['username']} (ID: {uid})")
