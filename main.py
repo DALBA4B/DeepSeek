@@ -10,7 +10,7 @@ import sys
 from typing import Optional
 
 from telegram import Update
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
 
 from config import get_config, ConfigError
 from models import BotConfig
@@ -212,6 +212,153 @@ class DeepSeekBot:
         except Exception as e:
             logger.error(f"Error handling message: {e}", exc_info=True)
 
+    async def _cmd_analyze(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """
+        Handle /analyze command to manually trigger Gemini analysis.
+        Shows detailed analysis results for all users in daily log.
+        """
+        if not update.effective_chat or not update.message:
+            return
+        
+        chat_id = update.effective_chat.id
+        
+        try:
+            # Get daily messages from memory
+            daily_messages = self.memory.get_daily_log()
+            
+            if not daily_messages:
+                logger.info("No messages to analyze")
+                return
+            
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"🔄 Analyzing {len(daily_messages)} messages from today...\n⏳ This may take a moment..."
+            )
+            
+            # Group messages by user
+            users_data: dict = {}
+            for msg in daily_messages:
+                if msg.user_id not in users_data:
+                    users_data[msg.user_id] = {"username": msg.username, "messages": []}
+                users_data[msg.user_id]["messages"].append(msg)
+            
+            # Analyze each user
+            results = []
+            detailed_results = []
+            from gemini_analyzer import GeminiAnalyzer
+            
+            if hasattr(self, 'gemini_analyzer'):
+                analyzer = self.gemini_analyzer
+                for uid, data in users_data.items():
+                    logger.info(f"Analyzing {len(data['messages'])} messages for {data['username']} (ID: {uid})")
+                    graph = await analyzer.analyze_user_messages(
+                        user_id=uid,
+                        username=data['username'],
+                        messages=data['messages']
+                    )
+                    if graph:
+                        results.append(f"✅ {data['username']}: {len(data['messages'])} msgs")
+                        detailed_results.append(self._format_analysis_details(data['username'], graph))
+                    else:
+                        results.append(f"⚠️ {data['username']}: Analysis failed")
+                
+                result_text = "\n".join(results)
+                
+                # Send summary
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"✅ Analysis complete!\n\n{result_text}\n\n📈 Knowledge graphs updated."
+                )
+                
+                # Send detailed results for each user
+                if detailed_results:
+                    for detail_text in detailed_results:
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=detail_text,
+                            parse_mode="HTML"
+                        )
+                
+                logger.info(f"Analysis complete. Results:\n{result_text}")
+            else:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="❌ Gemini analyzer not available"
+                )
+        
+        except Exception as e:
+            logger.error(f"Error in analyze command: {e}", exc_info=True)
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"❌ Analysis error: {str(e)[:100]}"
+            )
+
+    def _format_analysis_details(self, username: str, graph) -> str:
+        """
+        Format knowledge graph into readable message.
+        
+        Args:
+            username: User's username
+            graph: UserKnowledgeGraph object
+            
+        Returns:
+            Formatted HTML string with analysis details
+        """
+        lines = [f"<b>📊 Analysis for {username}</b>"]
+        
+        # Quick facts
+        if graph.quick_facts:
+            lines.append(f"\n<b>💡 Quick Facts ({len(graph.quick_facts)}):</b>")
+            for fact in graph.quick_facts[:5]:  # Show top 5
+                lines.append(f"  • {fact[:80]}")
+            if len(graph.quick_facts) > 5:
+                lines.append(f"  ... and {len(graph.quick_facts) - 5} more")
+        
+        # Interests by category
+        if graph.interests:
+            lines.append(f"\n<b>🎯 Interests ({len(graph.interests)} categories):</b>")
+            for category, items in graph.interests.items():
+                if items:
+                    item_names = ", ".join(list(items.keys())[:3])
+                    lines.append(f"  <b>{category}:</b> {item_names}")
+                    if len(items) > 3:
+                        lines.append(f"    ({len(items) - 3} more in {category})")
+        
+        # Personal info
+        if graph.personal:
+            lines.append(f"\n<b>👤 Personal Info:</b>")
+            for key, value in list(graph.personal.items())[:3]:
+                value_str = str(value)[:60] if value else "Unknown"
+                lines.append(f"  • {key}: {value_str}")
+            if len(graph.personal) > 3:
+                lines.append(f"  ... and {len(graph.personal) - 3} more attributes")
+        
+        # Social info
+        if graph.social:
+            lines.append(f"\n<b>👥 Social:</b>")
+            if "friends_mentioned" in graph.social and graph.social["friends_mentioned"]:
+                friends = graph.social["friends_mentioned"]
+                lines.append(f"  Friends: {', '.join(friends[:3])}")
+                if len(friends) > 3:
+                    lines.append(f"  ({len(friends) - 3} more friends)")
+            for key in ["relationship_status", "family"]:
+                if key in graph.social and graph.social[key]:
+                    lines.append(f"  • {key}: {graph.social[key]}")
+        
+        # Patterns
+        if graph.active_hours or graph.typical_topics:
+            lines.append(f"\n<b>📈 Patterns:</b>")
+            if graph.active_hours:
+                hours_str = f"{min(graph.active_hours)}:00 - {max(graph.active_hours)}:00" if len(graph.active_hours) > 1 else f"{graph.active_hours[0]}:00"
+                lines.append(f"  Active: {hours_str}")
+            if graph.typical_topics:
+                topics = ", ".join(graph.typical_topics[:3])
+                lines.append(f"  Topics: {topics}")
+        
+        lines.append(f"\n⏰ <i>Updated: {graph.updated_at.strftime('%H:%M:%S')}</i>")
+        
+        return "\n".join(lines)
+
     def _setup_signal_handlers(self) -> None:
         """Setup graceful shutdown handlers."""
         def signal_handler(signum, frame):
@@ -284,6 +431,10 @@ class DeepSeekBot:
                 self.handle_message
             )
             self._app.add_handler(message_handler)
+            
+            # Add /analyze command handler
+            analyze_handler = CommandHandler("analyze", self._cmd_analyze)
+            self._app.add_handler(analyze_handler)
 
             # Register startup and shutdown handlers
             self._app.post_init = self._startup_handler

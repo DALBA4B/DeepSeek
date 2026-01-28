@@ -113,18 +113,22 @@ class GeminiAnalyzer:
         Args:
             user_id: Telegram user ID
             username: Username
-            messages: List of user's messages from the day
+            messages: List of all messages from the day (including bot responses for context)
             
         Returns:
             Updated UserKnowledgeGraph or None on error
         """
-        if not messages:
-            logger.debug(f"No messages to analyze for user {user_id}")
+        # Filter out bot's own messages (user_id == -1) from analysis
+        # But keep them in context for understanding conversation flow
+        user_messages = [msg for msg in messages if msg.user_id != -1 and msg.user_id == user_id]
+        
+        if not user_messages:
+            logger.debug(f"No user messages to analyze for user {user_id}")
             return None
         
-        # Format messages for Gemini
+        # Format all messages (user + bot) for context, but only analyze user messages
         messages_text = "\n".join([
-            f"[{msg.timestamp.strftime('%H:%M')}] {msg.text}"
+            f"[{msg.timestamp.strftime('%H:%M')}] {msg.username}: {msg.text}"
             for msg in messages
         ])
         
