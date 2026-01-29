@@ -72,7 +72,7 @@ class DeepSeekBot:
         self.scheduler = scheduler or TaskScheduler(timezone="Europe/Kiev")
         
         # Initialize DeepSeek analyzer (will be set in _setup_nightly_analysis if available)
-        self.gemini_analyzer = None
+        self.deepseek_analyzer = None
         
         # Setup nightly analysis if DeepSeek API key is available
         self._setup_nightly_analysis()
@@ -105,14 +105,14 @@ class DeepSeekBot:
             analyzer = DeepSeekAnalyzer(deepseek_api_key, self.knowledge_manager)
             
             # Save analyzer for /analyze command
-            self.gemini_analyzer = analyzer
+            self.deepseek_analyzer = analyzer
             
             # Pass memory to collector for fallback/primary source
             collector = DailyMessageCollector(firebase_db, memory=self.memory)
             
             # Pass memory to task for nightly cleanup
             nightly_task = NightlyAnalysisTask(
-                gemini_analyzer=analyzer,
+                deepseek_analyzer=analyzer,
                 message_collector=collector,
                 memory=self.memory,
                 run_hour=3,
@@ -306,10 +306,10 @@ class DeepSeekBot:
             detailed_results = []
             from deepseek_analyzer import DeepSeekAnalyzer
             
-            logger.info(f"Gemini analyzer available: {hasattr(self, 'gemini_analyzer') and self.gemini_analyzer is not None}")
+            logger.info(f"DeepSeek analyzer available: {hasattr(self, 'deepseek_analyzer') and self.deepseek_analyzer is not None}")
             
-            if hasattr(self, 'gemini_analyzer') and self.gemini_analyzer is not None:
-                analyzer = self.gemini_analyzer
+            if hasattr(self, 'deepseek_analyzer') and self.deepseek_analyzer is not None:
+                analyzer = self.deepseek_analyzer
                 for uid, data in users_data.items():
                     logger.info(f"Analyzing {len(data['messages'])} messages for {data['username']} (ID: {uid})")
                     graph = await analyzer.analyze_user_messages(

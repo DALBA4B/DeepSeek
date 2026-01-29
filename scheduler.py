@@ -158,7 +158,7 @@ class NightlyAnalysisTask:
     
     def __init__(
         self, 
-        gemini_analyzer,
+        deepseek_analyzer,
         message_collector,
         memory: Optional[Any] = None,
         run_hour: int = 3,
@@ -168,13 +168,13 @@ class NightlyAnalysisTask:
         Initialize nightly analysis task.
         
         Args:
-            gemini_analyzer: DeepSeekAnalyzer instance
+            deepseek_analyzer: DeepSeekAnalyzer instance
             message_collector: DailyMessageCollector instance
             memory: Memory instance (optional) for cleanup
             run_hour: Hour to run (default: 3 AM)
             run_minute: Minute to run (default: 0)
         """
-        self._analyzer = gemini_analyzer
+        self._analyzer = deepseek_analyzer
         self._collector = message_collector
         self._memory = memory
         self.run_hour = run_hour

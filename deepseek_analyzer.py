@@ -241,7 +241,7 @@ class DeepSeekAnalyzer:
 
 
 class DailyMessageCollector:
-    """Collects messages for daily analysis (same interface as Gemini version)."""
+    """Collects messages for daily analysis for nightly DeepSeek analysis."""
     
     def __init__(self, firebase_db=None, memory=None):
         """

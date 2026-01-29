@@ -106,9 +106,6 @@ class BotConfig:
     giphy_api_key: str
     firebase_cred_path: str
     
-    # Optional API keys
-    gemini_api_key: Optional[str] = None
-    
     # Bot settings
     bot_name: str = "Вася"
     chat_id: Optional[int] = None

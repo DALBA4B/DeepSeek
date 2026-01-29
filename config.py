@@ -130,16 +130,13 @@ def load_config() -> BotConfig:
         giphy_api_key=_get_required_env("GIPHY_API_KEY"),
         firebase_cred_path=_get_firebase_credentials(),
         
-        # Optional API keys
-        gemini_api_key=os.getenv("GEMINI_API_KEY"),
-        
         # Bot settings
         bot_name=os.getenv("BOT_NAME", "Вася"),
         chat_id=_get_optional_int("CHAT_ID"),
         
         # Memory settings
         # short_memory_limit: recent context for quick responses (RAM deque with N last messages)
-        # All messages for the entire day are kept in daily_log (RAM) for Gemini analysis
+        # All messages for the entire day are kept in daily_log (RAM) for DeepSeek analysis
         short_memory_limit=_get_optional_int("SHORT_MEMORY_LIMIT", 30) or 30,
         context_messages_count=_get_optional_int("CONTEXT_MESSAGES_COUNT", 20) or 20,
         
