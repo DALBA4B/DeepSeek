@@ -16,9 +16,9 @@ from config import get_config, ConfigError
 from models import BotConfig
 from memory import Memory, RecentResponseTracker
 from brain import Brain
-from responder import Responder, ResponseParser
-from knowledge_graph import KnowledgeGraphManager
-from scheduler import TaskScheduler, NightlyAnalysisTask
+from otvetcik import Responder, ResponseParser
+from graph_memory import KnowledgeGraphManager
+from night_analyzator import TaskScheduler, NightlyAnalysisTask
 
 logger = logging.getLogger(__name__)
 

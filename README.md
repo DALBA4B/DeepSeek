@@ -242,7 +242,7 @@ BOT_NAME_VARIATIONS = [
 ### Добавление стикеров
 
 ```python
-from responder import StickerManager
+from otvetcik import StickerManager
 
 stickers = StickerManager()
 stickers.add_sticker("excited", "CAACAgIAAxkBAAE...")

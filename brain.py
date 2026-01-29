@@ -13,7 +13,7 @@ from openai import OpenAI
 
 from models import BotConfig, ChatMessage, RequestComplexity, TokenRange
 from prompts import get_system_prompt, get_context_prompt, BOT_NAME_VARIATIONS, CONTINUATION_TRIGGERS, FALLBACK_RESPONSES
-from knowledge_graph import KnowledgeGraphManager, TopicDetector
+from graph_memory import KnowledgeGraphManager, TopicDetector
 
 logger = logging.getLogger(__name__)
 

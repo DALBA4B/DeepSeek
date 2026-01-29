@@ -13,7 +13,7 @@ from typing import List, Dict, Any, Optional
 from openai import OpenAI
 
 from models import ChatMessage
-from knowledge_graph import UserKnowledgeGraph, KnowledgeGraphManager, InterestNode
+from graph_memory import UserKnowledgeGraph, KnowledgeGraphManager, InterestNode
 
 logger = logging.getLogger(__name__)
 
