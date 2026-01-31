@@ -141,13 +141,9 @@ class DeepSeekBot:
         if not message:
             return
 
-        # DEBUG: Log ALL message types
+        # Log message received
         logger.info(f"=== MESSAGE RECEIVED ===")
         logger.info(f"has text: {bool(message.text)}, text: {message.text[:30] if message.text else 'None'}")
-        logger.info(f"has photo: {bool(message.photo)}")
-        logger.info(f"has video: {bool(message.video)}")
-        logger.info(f"has caption: {bool(message.caption)}, caption: {message.caption[:30] if message.caption else 'None'}")
-        logger.info(f"has document: {bool(message.document)}")
         logger.info(f"======================")
 
         # Ignore messages from the bot itself

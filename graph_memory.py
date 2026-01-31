@@ -415,10 +415,15 @@ class KnowledgeGraphManager:
             try:
                 doc = self._db.collection('knowledge_graphs').document(str(user_id)).get()
                 if doc.exists:
-                    graph = UserKnowledgeGraph.from_dict(doc.to_dict())
-                    self._cache[user_id] = graph
-                    logger.info(f"Loaded knowledge graph for user {user_id}")
-                    return graph
+                    data = doc.to_dict()
+                    # Validate data is dict, not corrupted
+                    if isinstance(data, dict):
+                        graph = UserKnowledgeGraph.from_dict(data)
+                        self._cache[user_id] = graph
+                        logger.info(f"Loaded knowledge graph for user {user_id}")
+                        return graph
+                    else:
+                        logger.warning(f"Corrupted knowledge graph data for user {user_id}, creating new")
             except Exception as e:
                 logger.error(f"Error loading knowledge graph: {e}")
         
