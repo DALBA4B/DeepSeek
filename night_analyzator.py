@@ -186,7 +186,7 @@ class NightlyAnalysisTask:
         
         try:
             # Collect yesterday's messages
-            messages_by_user = self._collector.get_yesterday_messages()
+            messages_by_user = await self._collector.get_yesterday_messages()
             
             if messages_by_user:
                 # Run analysis

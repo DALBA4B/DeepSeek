@@ -130,23 +130,21 @@ class DeepSeekBot:
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """
         Handle incoming messages from the group chat.
-        
-        Flow:
-        1. Validate message and check filters
-        2. Save message to memory
-        3. Decide if bot should respond
-        4. Generate and send response
-        5. Save bot's response to short-term memory
-        
-        Args:
-            update: Telegram update object
-            context: Bot context
         """
         message = update.message
         
-        # Ignore messages without text
-        if not message or not message.text:
+        # Check if message exists
+        if not message:
             return
+
+        # DEBUG: Log ALL message types
+        logger.info(f"=== MESSAGE RECEIVED ===")
+        logger.info(f"has text: {bool(message.text)}, text: {message.text[:30] if message.text else 'None'}")
+        logger.info(f"has photo: {bool(message.photo)}")
+        logger.info(f"has video: {bool(message.video)}")
+        logger.info(f"has caption: {bool(message.caption)}, caption: {message.caption[:30] if message.caption else 'None'}")
+        logger.info(f"has document: {bool(message.document)}")
+        logger.info(f"======================")
 
         # Ignore messages from the bot itself
         if message.from_user.id == context.bot.id:
@@ -165,20 +163,24 @@ class DeepSeekBot:
 
         user_id = message.from_user.id
         username = message.from_user.first_name or message.from_user.username or "Unknown"
-        text = message.text
+        text = message.text or ""
         message_id = message.message_id
 
         try:
-            logger.info(f"Received message from {username} (ID: {user_id}): {text[:50]}")
+            # Process text messages only
+            if not text:
+                logger.debug("Message has no text, ignoring")
+                return
+
+            logger.info(f"Received text message from {username} (ID: {user_id}): {text[:50]}")
 
             # Save message to memory
             self.memory.add_message(user_id, username, text, message_id)
 
             # Check if bot should respond (with conversation continuation support)
-            recent = self.memory.get_recent()
             bot_was_recent = self.memory.bot_responded_recently(within_last_n=3)
             
-            if not self.brain.should_respond(text, recent, bot_responded_recently=bot_was_recent):
+            if not self.brain.should_respond(text, bot_responded_recently=bot_was_recent):
                 logger.debug("Bot decided not to respond to this message")
                 return
 
@@ -193,7 +195,7 @@ class DeepSeekBot:
                 context_str,
                 user_id=user_id,
                 username=username,
-                avoid_responses=self._response_tracker.get_avoid_list() if hasattr(self, '_response_tracker') else None
+                avoid_responses=self._response_tracker.get_avoid_list()
             )
             logger.info(f"Generated response: {response[:50]}")
 
@@ -210,8 +212,7 @@ class DeepSeekBot:
                 )
                 
                 # Track response for anti-repeat
-                if hasattr(self, '_response_tracker'):
-                    self._response_tracker.add_response(parsed.response_type.value, parsed.content)
+                self._response_tracker.add_response(parsed.response_type.value, parsed.content)
                 
                 logger.debug("Bot response saved to short-term memory")
 
@@ -451,7 +452,7 @@ class DeepSeekBot:
             logger.info("Creating Telegram Application...")
             self._app = Application.builder().token(self.config.telegram_token).build()
 
-            # Add message handler for all text messages
+            # Add message handler for text messages only
             message_handler = MessageHandler(
                 filters.TEXT & ~filters.COMMAND,
                 self.handle_message

@@ -10,6 +10,8 @@ from datetime import datetime
 from typing import Dict, List, Optional, Any, Set
 from enum import Enum
 
+from models import InterestEntry, InterestStatus
+
 logger = logging.getLogger(__name__)
 
 
@@ -143,7 +145,7 @@ class InterestNode:
 class UserKnowledgeGraph:
     """
     Knowledge graph for a single user.
-    Stores interests, personal info, social connections, and patterns.
+    Stores interests with versioned history, personal info, and patterns.
     """
     user_id: int
     username: str
@@ -151,8 +153,8 @@ class UserKnowledgeGraph:
     # Quick facts for fast context
     quick_facts: List[str] = field(default_factory=list)
     
-    # Hierarchical knowledge graph
-    interests: Dict[str, Dict[str, InterestNode]] = field(default_factory=dict)
+    # Interests: category -> List of InterestEntry (not dict, for versioning)
+    interests: Dict[str, List[InterestEntry]] = field(default_factory=dict)
     personal: Dict[str, Any] = field(default_factory=dict)
     social: Dict[str, Any] = field(default_factory=dict)
     
@@ -172,15 +174,8 @@ class UserKnowledgeGraph:
             "quick_facts": self.quick_facts,
             "knowledge_graph": {
                 "interests": {
-                    category: {
-                        name: {
-                            "details": node.details,
-                            "last_mentioned": node.last_mentioned.isoformat(),
-                            "mention_count": node.mention_count
-                        }
-                        for name, node in nodes.items()
-                    }
-                    for category, nodes in self.interests.items()
+                    category: [entry.to_dict() for entry in entries]
+                    for category, entries in self.interests.items()
                 },
                 "personal": self.personal,
                 "social": self.social,
@@ -206,19 +201,20 @@ class UserKnowledgeGraph:
         # Parse knowledge graph
         kg = data.get("knowledge_graph", {})
         
-        # Parse interests
+        # Parse interests (now as list of InterestEntry)
         interests_data = kg.get("interests", {})
-        for category, nodes in interests_data.items():
-            graph.interests[category] = {}
-            for name, node_data in nodes.items():
-                graph.interests[category][name] = InterestNode(
-                    name=name,
-                    details=node_data.get("details", {}),
-                    last_mentioned=datetime.fromisoformat(
-                        node_data.get("last_mentioned", datetime.now().isoformat())
+        for category, entries_list in interests_data.items():
+            graph.interests[category] = []
+            for entry_data in entries_list:
+                entry = InterestEntry(
+                    name=entry_data.get("name", ""),
+                    status=InterestStatus(entry_data.get("status", "likes")),
+                    added_at=datetime.fromisoformat(
+                        entry_data.get("added_at", datetime.now().isoformat())
                     ),
-                    mention_count=node_data.get("mention_count", 1)
+                    current=entry_data.get("current", True)
                 )
+                graph.interests[category].append(entry)
         
         graph.personal = kg.get("personal", {})
         graph.social = kg.get("social", {})
@@ -252,26 +248,103 @@ class UserKnowledgeGraph:
         if self.quick_facts:
             context_parts.append(f"Факты о {self.username}: " + ", ".join(self.quick_facts[:5]))
         
-        # Add relevant interests
+        # Add relevant interests (only current=True entries)
         for topic in topics:
             category = topic.value
             if category in self.interests:
-                interests_str = []
-                for name, node in self.interests[category].items():
-                    if node.details:
-                        details_str = ", ".join(f"{k}: {v}" for k, v in node.details.items())
-                        interests_str.append(f"{name} ({details_str})")
-                    else:
-                        interests_str.append(name)
-                
-                if interests_str:
-                    context_parts.append(f"{self.username} интересуется ({category}): " + ", ".join(interests_str))
+                current_interests = [e for e in self.interests[category] if e.current]
+                if current_interests:
+                    interests_str = []
+                    for entry in current_interests:
+                        status_text = "нравится" if entry.status == InterestStatus.LIKES else "не нравится"
+                        interests_str.append(f"{entry.name} ({status_text})")
+                    
+                    if interests_str:
+                        context_parts.append(f"{self.username} ({category}): " + ", ".join(interests_str))
         
         # Add typical topics if relevant
         if self.typical_topics and TopicCategory.GENERAL in topics:
             context_parts.append(f"Обычные темы {self.username}: " + ", ".join(self.typical_topics[:3]))
         
         return "\n".join(context_parts) if context_parts else ""
+    
+    def add_interest(self, category: TopicCategory, name: str, status: InterestStatus) -> None:
+        """
+        Add or update an interest.
+        If interest already exists with different status, mark old as current=False and add new.
+        
+        Args:
+            category: Interest category
+            name: Interest name
+            status: Interest status (likes/dislikes)
+        """
+        cat_str = category.value
+        
+        if cat_str not in self.interests:
+            self.interests[cat_str] = []
+        
+        # Check if interest already exists
+        existing_entry = None
+        for entry in self.interests[cat_str]:
+            if entry.name.lower() == name.lower() and entry.current:
+                existing_entry = entry
+                break
+        
+        if existing_entry and existing_entry.status == status:
+            # Same status, just update timestamp
+            existing_entry.added_at = datetime.now()
+            logger.debug(f"Updated existing interest: {name} ({cat_str})")
+        elif existing_entry:
+            # Status changed - mark old as not current, add new entry
+            existing_entry.current = False
+            new_entry = InterestEntry(name=name, status=status, current=True)
+            self.interests[cat_str].append(new_entry)
+            logger.info(f"Interest changed: {name} ({cat_str}) - {existing_entry.status.value} → {status.value}")
+        else:
+            # New interest
+            new_entry = InterestEntry(name=name, status=status, current=True)
+            self.interests[cat_str].append(new_entry)
+            logger.info(f"Added new interest: {name} ({cat_str}) - {status.value}")
+    
+    def get_interests(self, category: Optional[TopicCategory] = None) -> Dict[str, List[InterestEntry]]:
+        """
+        Get current interests, optionally filtered by category.
+        
+        Args:
+            category: Optional category filter
+            
+        Returns:
+            Dictionary of category -> list of InterestEntry (current=True only)
+        """
+        if category:
+            cat_str = category.value
+            current_entries = [e for e in self.interests.get(cat_str, []) if e.current]
+            return {cat_str: current_entries} if current_entries else {}
+        
+        # Return all current entries
+        result = {}
+        for cat, entries in self.interests.items():
+            current = [e for e in entries if e.current]
+            if current:
+                result[cat] = current
+        return result
+    
+    def get_interest_history(self, name: str) -> List[InterestEntry]:
+        """
+        Get complete history of an interest (all versions).
+        
+        Args:
+            name: Interest name
+            
+        Returns:
+            List of all versions of this interest
+        """
+        history = []
+        for entries_list in self.interests.values():
+            for entry in entries_list:
+                if entry.name.lower() == name.lower():
+                    history.append(entry)
+        return sorted(history, key=lambda x: x.added_at)
 
 
 class TopicDetector:

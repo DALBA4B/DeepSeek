@@ -260,8 +260,16 @@ class Memory:
         # Add to short-term memory (deque auto-trims to maxlen)
         self._short_term.append(message)
         
-        # Add to daily log (keeps growing until nightly clear)
-        self._daily_log.append(message)
+        # Add to daily log ONLY if message is from today
+        # This prevents counter corruption after bot restart/redeploy
+        message_date = message.timestamp.date()
+        today = datetime.now().date()
+        
+        if message_date == today:
+            self._daily_log.append(message)
+            logger.debug(f"Added to daily log: {username}")
+        else:
+            logger.debug(f"Message from different day ({message_date}), skipping daily log")
 
         # Save to long-term storage (only for user messages, not bot responses)
         if save_to_firebase and self._storage:

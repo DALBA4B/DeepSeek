@@ -25,6 +25,33 @@ class RequestComplexity(Enum):
     COMPLEX = "complex"    # Explanations, stories, plans
 
 
+class InterestStatus(Enum):
+    """Status of user interests (likes or dislikes)."""
+    LIKES = "likes"
+    DISLIKES = "dislikes"
+
+
+@dataclass
+class InterestEntry:
+    """
+    A single interest entry with history tracking.
+    Allows versioning of interest changes (user changes mind).
+    """
+    name: str
+    status: InterestStatus
+    added_at: datetime = field(default_factory=datetime.now)
+    current: bool = True  # Is this the current status for this interest?
+    
+    def to_dict(self) -> dict:
+        """Convert to dictionary for Firebase storage."""
+        return {
+            "name": self.name,
+            "status": self.status.value,
+            "added_at": self.added_at.isoformat(),
+            "current": self.current
+        }
+
+
 @dataclass
 class TokenRange:
     """Token range for dynamic response length."""
@@ -72,7 +99,8 @@ class ChatMessage:
             "username": self.username,
             "text": self.text,
             "message_id": self.message_id,
-            "timestamp": self.timestamp
+            "timestamp": self.timestamp,
+            "date": self.timestamp.date().isoformat()  # Add date field for Firebase queries
         }
 
     def to_context_line(self) -> str:
@@ -112,7 +140,7 @@ class BotConfig:
     
     # Memory settings
     short_memory_limit: int = 30
-    context_messages_count: int = 20
+    context_messages_count: int = 35
     
     # DeepSeek settings
     deepseek_base_url: str = "https://api.deepseek.com"

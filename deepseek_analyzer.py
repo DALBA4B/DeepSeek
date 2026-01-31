@@ -12,8 +12,8 @@ from typing import List, Dict, Any, Optional
 
 from openai import OpenAI
 
-from models import ChatMessage
-from graph_memory import UserKnowledgeGraph, KnowledgeGraphManager, InterestNode
+from models import ChatMessage, InterestStatus
+from graph_memory import UserKnowledgeGraph, KnowledgeGraphManager, InterestNode, TopicCategory
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +188,7 @@ class DeepSeekAnalyzer:
     ) -> list:
         """
         Update knowledge graph with analysis results.
+        Now handles InterestEntry with status tracking.
         
         Args:
             graph: UserKnowledgeGraph to update
@@ -196,39 +197,39 @@ class DeepSeekAnalyzer:
         Returns:
             List of newly added facts
         """
-        # Update facts (new prompt uses "facts" instead of "quick_facts")
+        # Update facts
         new_facts = analysis.get("facts", [])
         existing_facts = set(graph.quick_facts)
         added_facts_list = []
+        
         for fact in new_facts:
             if fact not in existing_facts:
                 graph.quick_facts.append(fact)
                 added_facts_list.append(fact)
+        
         graph.quick_facts = graph.quick_facts[-10:]  # Keep last 10
         
-        # Update interests
+        # Update interests using new InterestEntry structure
         interests = analysis.get("interests", {})
-        for category, items in interests.items():
+        
+        for category_str, items in interests.items():
             if not items:
                 continue
             
-            if category not in graph.interests:
-                graph.interests[category] = {}
+            # Convert string category to TopicCategory enum
+            try:
+                category = TopicCategory(category_str)
+            except ValueError:
+                logger.warning(f"Unknown category: {category_str}")
+                continue
             
             for name in items:
-                if name in graph.interests[category]:
-                    # Update existing interest
-                    node = graph.interests[category][name]
-                    node.mention_count += 1
-                    node.last_mentioned = datetime.now()
-                else:
-                    # Add new interest
-                    graph.interests[category][name] = InterestNode(
-                        name=name,
-                        details={},
-                        last_mentioned=datetime.now(),
-                        mention_count=1
-                    )
+                # Use graph's add_interest() for proper versioning
+                graph.add_interest(
+                    category=category,
+                    name=name,
+                    status=InterestStatus.LIKES  # Default to likes when mentioned
+                )
         
         # Social info is NOT tracked - bot cannot reliably understand social nuances
         # Personal info is NOT tracked - only objective facts and interests matter
@@ -278,6 +279,11 @@ class DailyMessageCollector:
                 
                 for doc in docs:
                     msg_data = doc.to_dict()
+                    
+                    # Parse timestamp from Firebase (stored as string)
+                    if isinstance(msg_data.get('timestamp'), str):
+                        msg_data['timestamp'] = datetime.fromisoformat(msg_data['timestamp'])
+                    
                     msg = ChatMessage(**msg_data)
                     if msg.user_id not in messages_by_user:
                         messages_by_user[msg.user_id] = []
@@ -304,3 +310,14 @@ class DailyMessageCollector:
         
         logger.warning("No data source available for daily analysis")
         return {}
+    
+    async def get_yesterday_messages(self) -> Dict[int, List[ChatMessage]]:
+        """
+        Get all messages from yesterday grouped by user.
+        Convenience method that calls get_messages_for_day() with yesterday's date.
+        
+        Returns:
+            Dict mapping user_id to list of messages from yesterday
+        """
+        yesterday = datetime.now() - timedelta(days=1)
+        return await self.get_messages_for_day(yesterday)

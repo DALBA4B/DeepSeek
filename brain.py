@@ -13,7 +13,7 @@ from openai import OpenAI
 
 from models import BotConfig, ChatMessage, RequestComplexity, TokenRange
 from prompts import get_system_prompt, get_context_prompt, BOT_NAME_VARIATIONS, CONTINUATION_TRIGGERS, FALLBACK_RESPONSES
-from graph_memory import KnowledgeGraphManager, TopicDetector
+from graph_memory import KnowledgeGraphManager
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +39,6 @@ class RequestClassifier:
         'история', 'напиши текст', 'сочини', 'придумай историю',
         'что думаешь о', 'мнение', 'проанализируй', 'сравни',
     ]
-    
-    # Patterns for questions (tend to need more explanation)
-    QUESTION_PATTERNS = ['почему', 'зачем', 'как ', 'что такое', 'кто такой']
     
     @classmethod
     def classify(cls, message: str) -> RequestComplexity:
@@ -101,7 +98,6 @@ class Brain:
         self.config = config
         self._available_stickers = available_stickers or ["happy", "sad", "laugh", "cool", "think", "wtf"]
         self._knowledge_manager = knowledge_manager
-        self._topic_detector = TopicDetector()
         
         try:
             self.client = OpenAI(
@@ -129,8 +125,7 @@ class Brain:
 
     def should_respond(
         self, 
-        message_text: str, 
-        recent_messages: Optional[List[ChatMessage]] = None,
+        message_text: str,
         bot_responded_recently: bool = False
     ) -> bool:
         """
@@ -144,7 +139,6 @@ class Brain:
         
         Args:
             message_text: The received message text
-            recent_messages: List of recent messages (for future context-aware decisions)
             bot_responded_recently: Whether bot responded in last few messages
         
         Returns:
