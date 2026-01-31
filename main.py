@@ -22,6 +22,10 @@ from night_analyzator import TaskScheduler, NightlyAnalysisTask
 
 logger = logging.getLogger(__name__)
 
+# Silence verbose logging from external libraries
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("telegram.ext._application").setLevel(logging.WARNING)
+
 
 class DeepSeekBot:
     """
@@ -422,7 +426,6 @@ class DeepSeekBot:
             logger.error(f"Failed to load sticker pack: {e}")
             
         logger.info("Message handler registered")
-        logger.info("Bot is running... Press Ctrl+C to stop")
         logger.info("=" * 50)
         self._running = True
 
