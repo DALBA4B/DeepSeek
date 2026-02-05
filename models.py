@@ -150,6 +150,7 @@ class BotConfig:
     
     # Response settings
     random_response_probability: float = 0.1
+    use_smart_respond: bool = False  # Use AI to decide whether to respond (costs API calls)
     
     # Giphy settings
     giphy_api_url: str = "https://api.giphy.com/v1/gifs/search"

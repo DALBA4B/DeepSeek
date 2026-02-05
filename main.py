@@ -180,7 +180,18 @@ class DeepSeekBot:
             # Check if bot should respond (with conversation continuation support)
             bot_was_recent = self.memory.bot_responded_recently(within_last_n=3)
             
-            if not self.brain.should_respond(text, bot_responded_recently=bot_was_recent):
+            # Use smart AI-based decision or simple heuristics
+            if self.config.use_smart_respond:
+                context_str = self.memory.get_context()
+                should_respond = self.brain.smart_should_respond(
+                    text, context_str, bot_responded_recently=bot_was_recent
+                )
+            else:
+                should_respond = self.brain.should_respond(
+                    text, bot_responded_recently=bot_was_recent
+                )
+            
+            if not should_respond:
                 logger.debug("Bot decided not to respond to this message")
                 return
 

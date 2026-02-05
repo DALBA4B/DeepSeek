@@ -26,18 +26,32 @@ class RequestClassifier:
     
     # Keywords suggesting simple/short answers (High Temperature/Creativity)
     SIMPLE_KEYWORDS = [
+        # Direct simple questions
         'да?', 'нет?', 'ок?', 'норм?', 'реакц', 'поставь', 'лайк',
         'согласен', 'да/нет', 'коротко', 'одним словом', 'быстро',
+        # Continuation words
         'ещё', 'еще', 'another', 'more', 'продолжай',
-        'шутка', 'анекдот', 'шутку', 'прикол', 'рассмеши', 'рофл',  # Humor needs high temp
+        # Humor (needs high temp for creativity)
+        'шутка', 'анекдот', 'шутку', 'прикол', 'рассмеши', 'рофл',
+        # Casual conversation starters (short answers expected)
+        'как дела', 'чо делаешь', 'что делаешь', 'как сам', 'чо как',
+        'ну', 'ага', 'понял', 'спс', 'благодарю', 'ок', 'окей',
+        # Simple reactions expected
+        'круто', 'класс', 'топ', 'огонь', 'красава',
     ]
     
     # Keywords suggesting complex/detailed answers (Low Temperature/Focus)
     COMPLEX_KEYWORDS = [
+        # Explanatory requests
         'расскажи', 'объясни', 'почему', 'как работает', 'подробно',
         'план', 'список', 'пошагово', 'детально', 'разбери',
+        # Creative/storytelling
         'история', 'напиши текст', 'сочини', 'придумай историю',
+        # Analysis/opinion
         'что думаешь о', 'мнение', 'проанализируй', 'сравни',
+        # Help requests
+        'помоги', 'посоветуй', 'как сделать', 'как мне', 'подскажи',
+        'научи', 'покажи как', 'объясни как',
     ]
     
     @classmethod
@@ -172,6 +186,77 @@ class Brain:
 
         logger.debug(f"Should not respond to: {message_text[:50]}")
         return False
+
+    def smart_should_respond(
+        self, 
+        message_text: str, 
+        context: str,
+        bot_responded_recently: bool = False
+    ) -> bool:
+        """
+        Use cheap API call to decide if bot should respond.
+        More natural than hardcoded heuristics.
+        
+        Args:
+            message_text: Current message
+            context: Recent chat context
+            bot_responded_recently: Whether bot responded recently
+            
+        Returns:
+            True if bot should respond
+        """
+        message_lower = message_text.lower()
+        
+        # Always respond if bot name mentioned
+        for variation in BOT_NAME_VARIATIONS:
+            if variation in message_lower:
+                logger.info(f"Smart respond: bot name '{variation}' mentioned")
+                return True
+        
+        # Use AI to decide for other cases
+        try:
+            decision_prompt = f"""Ты участник группового чата. Реши — отвечать или нет.
+
+Контекст:
+{context[-400:]}
+
+Новое сообщение: "{message_text}"
+
+Ты отвечал недавно: {"да" if bot_responded_recently else "нет"}
+
+Ответь ТОЛЬКО "да" или "нет".
+
+Отвечай "да" если:
+- Есть вопрос к чату (кто знает, посоветуйте, какой лучше, что думаете)
+- Можешь добавить что-то интересное или смешное в тему
+- Идёт живой диалог и уместно включиться
+- Тебя как будто спрашивают или ждут реакции
+
+Отвечай "нет" если:
+- Это просто междометие (бля, ааа, хах)
+- Ты только что отвечал — не надо на каждое сообщение
+- Люди болтают между собой и ты не в тему
+- Сообщение короткое и не требует реакции
+
+Будь естественным: отвечай когда хочется что-то сказать, молчи когда нечего."""
+
+            response = self.client.chat.completions.create(
+                model=self.config.deepseek_model,
+                messages=[{"role": "user", "content": decision_prompt}],
+                max_tokens=3,  # Very cheap - just "да" or "нет"
+                temperature=0.7
+            )
+            
+            answer = response.choices[0].message.content.strip().lower()
+            should_respond = "да" in answer or "yes" in answer
+            
+            logger.info(f"Smart respond decision: {answer} -> {should_respond}")
+            return should_respond
+            
+        except Exception as e:
+            logger.warning(f"Smart respond failed, falling back to random: {e}")
+            # Fallback to random chance
+            return random.random() < self.config.random_response_probability
 
     def generate_response(
         self, 
