@@ -119,6 +119,7 @@ class DeepSeekBot:
                 deepseek_analyzer=analyzer,
                 message_collector=collector,
                 memory=self.memory,
+                knowledge_manager=self.knowledge_manager,
                 run_hour=3,
                 run_minute=0
             )

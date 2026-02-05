@@ -161,6 +161,7 @@ class NightlyAnalysisTask:
         deepseek_analyzer,
         message_collector,
         memory: Optional[Any] = None,
+        knowledge_manager: Optional[Any] = None,
         run_hour: int = 3,
         run_minute: int = 0
     ):
@@ -171,17 +172,19 @@ class NightlyAnalysisTask:
             deepseek_analyzer: DeepSeekAnalyzer instance
             message_collector: DailyMessageCollector instance
             memory: Memory instance (optional) for cleanup
+            knowledge_manager: KnowledgeGraphManager instance (optional) for cache clearing
             run_hour: Hour to run (default: 3 AM)
             run_minute: Minute to run (default: 0)
         """
         self._analyzer = deepseek_analyzer
         self._collector = message_collector
         self._memory = memory
+        self._knowledge_manager = knowledge_manager
         self.run_hour = run_hour
         self.run_minute = run_minute
     
     async def run(self) -> None:
-        """Run the nightly analysis."""
+        """Run the nightly analysis and clear knowledge graph cache."""
         logger.info("Starting nightly analysis task")
         
         try:
@@ -195,9 +198,15 @@ class NightlyAnalysisTask:
             else:
                 logger.info("No messages to analyze from yesterday")
             
+            # Clear knowledge graph cache to ensure fresh data on next use
+            if self._knowledge_manager:
+                self._knowledge_manager.clear_cache()
+                logger.info("Knowledge graph cache cleared after nightly analysis")
+            
             # Prune daily log in memory (remove analyzed messages)
             if self._memory:
                 self._memory.clear_daily_log()
+                logger.info("Daily log cleared after analysis")
                 
         except Exception as e:
             logger.error(f"Error in nightly analysis task: {e}")

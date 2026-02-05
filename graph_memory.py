@@ -171,18 +171,18 @@ class UserKnowledgeGraph:
         return {
             "user_id": self.user_id,
             "username": self.username,
-            "quick_facts": self.quick_facts,
             "knowledge_graph": {
+                "quick_facts": self.quick_facts,
                 "interests": {
                     category: [entry.to_dict() for entry in entries]
                     for category, entries in self.interests.items()
                 },
                 "personal": self.personal,
                 "social": self.social,
-            },
-            "patterns": {
-                "active_hours": self.active_hours,
-                "typical_topics": self.typical_topics,
+                "patterns": {
+                    "active_hours": self.active_hours,
+                    "typical_topics": self.typical_topics,
+                },
             },
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
@@ -196,10 +196,9 @@ class UserKnowledgeGraph:
             username=data.get("username", "Unknown"),
         )
         
-        graph.quick_facts = data.get("quick_facts", [])
-        
-        # Parse knowledge graph
+        # Parse knowledge graph (all data is now nested inside)
         kg = data.get("knowledge_graph", {})
+        graph.quick_facts = kg.get("quick_facts", [])
         
         # Parse interests (now as list of InterestEntry)
         interests_data = kg.get("interests", {})
@@ -219,8 +218,8 @@ class UserKnowledgeGraph:
         graph.personal = kg.get("personal", {})
         graph.social = kg.get("social", {})
         
-        # Parse patterns
-        patterns = data.get("patterns", {})
+        # Parse patterns (now inside knowledge_graph)
+        patterns = kg.get("patterns", {})
         graph.active_hours = patterns.get("active_hours", [])
         graph.typical_topics = patterns.get("typical_topics", [])
         
