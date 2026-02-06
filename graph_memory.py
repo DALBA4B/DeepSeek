@@ -145,22 +145,13 @@ class InterestNode:
 class UserKnowledgeGraph:
     """
     Knowledge graph for a single user.
-    Stores interests with versioned history, personal info, and patterns.
+    Stores facts categorized by topic (gaming, food, movies, work, etc).
     """
     user_id: int
     username: str
     
-    # Quick facts for fast context
-    quick_facts: List[str] = field(default_factory=list)
-    
-    # Interests: category -> List of InterestEntry (not dict, for versioning)
-    interests: Dict[str, List[InterestEntry]] = field(default_factory=dict)
-    personal: Dict[str, Any] = field(default_factory=dict)
-    social: Dict[str, Any] = field(default_factory=dict)
-    
-    # Behavioral patterns
-    active_hours: List[int] = field(default_factory=list)
-    typical_topics: List[str] = field(default_factory=list)
+    # Facts: category -> List of facts (e.g., gaming: ["Dark Souls", "Dota"])
+    facts: Dict[str, List[str]] = field(default_factory=dict)
     
     # Metadata
     created_at: datetime = field(default_factory=datetime.now)
@@ -171,19 +162,7 @@ class UserKnowledgeGraph:
         return {
             "user_id": self.user_id,
             "username": self.username,
-            "knowledge_graph": {
-                "quick_facts": self.quick_facts,
-                "interests": {
-                    category: [entry.to_dict() for entry in entries]
-                    for category, entries in self.interests.items()
-                },
-                "personal": self.personal,
-                "social": self.social,
-                "patterns": {
-                    "active_hours": self.active_hours,
-                    "typical_topics": self.typical_topics,
-                },
-            },
+            "facts": self.facts,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }
@@ -196,32 +175,8 @@ class UserKnowledgeGraph:
             username=data.get("username", "Unknown"),
         )
         
-        # Parse knowledge graph (all data is now nested inside)
-        kg = data.get("knowledge_graph", {})
-        graph.quick_facts = kg.get("quick_facts", [])
-        
-        # Parse interests (now as list of InterestEntry)
-        interests_data = kg.get("interests", {})
-        for category, entries_list in interests_data.items():
-            graph.interests[category] = []
-            for entry_data in entries_list:
-                entry = InterestEntry(
-                    name=entry_data.get("name", ""),
-                    status=InterestStatus(entry_data.get("status", "likes")),
-                    added_at=datetime.fromisoformat(
-                        entry_data.get("added_at", datetime.now().isoformat())
-                    ),
-                    current=entry_data.get("current", True)
-                )
-                graph.interests[category].append(entry)
-        
-        graph.personal = kg.get("personal", {})
-        graph.social = kg.get("social", {})
-        
-        # Parse patterns (now inside knowledge_graph)
-        patterns = kg.get("patterns", {})
-        graph.active_hours = patterns.get("active_hours", [])
-        graph.typical_topics = patterns.get("typical_topics", [])
+        # Parse facts (simple dict of category -> list of strings)
+        graph.facts = data.get("facts", {})
         
         # Parse timestamps
         if "created_at" in data:
@@ -233,7 +188,7 @@ class UserKnowledgeGraph:
 
     def get_relevant_context(self, topics: Set[TopicCategory]) -> str:
         """
-        Get relevant parts of the graph based on detected topics.
+        Get relevant facts based on detected topics.
         
         Args:
             topics: Set of detected topic categories
@@ -243,107 +198,50 @@ class UserKnowledgeGraph:
         """
         context_parts = []
         
-        # Always include quick facts
-        if self.quick_facts:
-            context_parts.append(f"Факты о {self.username}: " + ", ".join(self.quick_facts[:5]))
-        
-        # Add relevant interests (only current=True entries)
+        # Add relevant facts from matching categories
         for topic in topics:
             category = topic.value
-            if category in self.interests:
-                current_interests = [e for e in self.interests[category] if e.current]
-                if current_interests:
-                    interests_str = []
-                    for entry in current_interests:
-                        status_text = "нравится" if entry.status == InterestStatus.LIKES else "не нравится"
-                        interests_str.append(f"{entry.name} ({status_text})")
-                    
-                    if interests_str:
-                        context_parts.append(f"{self.username} ({category}): " + ", ".join(interests_str))
-        
-        # Add typical topics if relevant
-        if self.typical_topics and TopicCategory.GENERAL in topics:
-            context_parts.append(f"Обычные темы {self.username}: " + ", ".join(self.typical_topics[:3]))
+            if category in self.facts and self.facts[category]:
+                facts_list = ", ".join(self.facts[category][:5])  # Max 5 facts per category
+                context_parts.append(f"{self.username} ({category}): {facts_list}")
         
         return "\n".join(context_parts) if context_parts else ""
     
-    def add_interest(self, category: TopicCategory, name: str, status: InterestStatus) -> None:
+    def add_fact(self, category: TopicCategory, fact: str) -> None:
         """
-        Add or update an interest.
-        If interest already exists with different status, mark old as current=False and add new.
+        Add a fact to the knowledge graph.
         
         Args:
-            category: Interest category
-            name: Interest name
-            status: Interest status (likes/dislikes)
+            category: Topic category
+            fact: The fact to add
         """
         cat_str = category.value
         
-        if cat_str not in self.interests:
-            self.interests[cat_str] = []
+        if cat_str not in self.facts:
+            self.facts[cat_str] = []
         
-        # Check if interest already exists
-        existing_entry = None
-        for entry in self.interests[cat_str]:
-            if entry.name.lower() == name.lower() and entry.current:
-                existing_entry = entry
-                break
-        
-        if existing_entry and existing_entry.status == status:
-            # Same status, just update timestamp
-            existing_entry.added_at = datetime.now()
-            logger.debug(f"Updated existing interest: {name} ({cat_str})")
-        elif existing_entry:
-            # Status changed - mark old as not current, add new entry
-            existing_entry.current = False
-            new_entry = InterestEntry(name=name, status=status, current=True)
-            self.interests[cat_str].append(new_entry)
-            logger.info(f"Interest changed: {name} ({cat_str}) - {existing_entry.status.value} → {status.value}")
+        # Avoid duplicates (case-insensitive)
+        if fact.lower() not in [f.lower() for f in self.facts[cat_str]]:
+            self.facts[cat_str].append(fact)
+            logger.info(f"Added fact for {self.username}: {fact} ({cat_str})")
         else:
-            # New interest
-            new_entry = InterestEntry(name=name, status=status, current=True)
-            self.interests[cat_str].append(new_entry)
-            logger.info(f"Added new interest: {name} ({cat_str}) - {status.value}")
+            logger.debug(f"Fact already exists: {fact} ({cat_str})")
     
-    def get_interests(self, category: Optional[TopicCategory] = None) -> Dict[str, List[InterestEntry]]:
+    def get_facts(self, category: Optional[TopicCategory] = None) -> Dict[str, List[str]]:
         """
-        Get current interests, optionally filtered by category.
+        Get facts, optionally filtered by category.
         
         Args:
             category: Optional category filter
             
         Returns:
-            Dictionary of category -> list of InterestEntry (current=True only)
+            Dictionary of category -> list of facts
         """
         if category:
             cat_str = category.value
-            current_entries = [e for e in self.interests.get(cat_str, []) if e.current]
-            return {cat_str: current_entries} if current_entries else {}
+            return {cat_str: self.facts.get(cat_str, [])} if cat_str in self.facts else {}
         
-        # Return all current entries
-        result = {}
-        for cat, entries in self.interests.items():
-            current = [e for e in entries if e.current]
-            if current:
-                result[cat] = current
-        return result
-    
-    def get_interest_history(self, name: str) -> List[InterestEntry]:
-        """
-        Get complete history of an interest (all versions).
-        
-        Args:
-            name: Interest name
-            
-        Returns:
-            List of all versions of this interest
-        """
-        history = []
-        for entries_list in self.interests.values():
-            for entry in entries_list:
-                if entry.name.lower() == name.lower():
-                    history.append(entry)
-        return sorted(history, key=lambda x: x.added_at)
+        return self.facts
 
 
 class TopicDetector:

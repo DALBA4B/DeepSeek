@@ -28,11 +28,7 @@ DEEPSEEK_ANALYSIS_PROMPT = """Ты извлекаешь ОБЪЕКТИВНЫЕ �
 
 Верни JSON в ТОЧНО таком формате:
 {{
-    "facts": [
-        "факт 1: только ПОСТОЯННЫЕ характеристики человека",
-        "факт 2: профессия, хобби, интересы, черты характера"
-    ],
-    "interests": {{
+    "facts": {{
         "gaming": ["игра 1", "игра 2"],
         "food": ["еда 1"],
         "movies": ["фильм 1"],
@@ -43,12 +39,13 @@ DEEPSEEK_ANALYSIS_PROMPT = """Ты извлекаешь ОБЪЕКТИВНЫЕ �
     }}
 }}
 
-✅ ПРИМЕРЫ ЧТО ВКЛЮЧИТЬ:
-1. "Люблю молоко" → факт: "Любит молоко"
-2. "Вчера смотрел Аватар" → интерес movies: "Аватар"
-3. "Я люблю Dark Souls" → интерес gaming: "Dark Souls" (БЕЗ обобщения!)
-4. "Я программист" → факт: "Программист", интерес work: "программист"
-5. "Обожаю K-pop" → интерес music: "K-pop"
+✅ ПРИМЕРЫ ЧТО ВКЛЮЧИТЬ В FAKTY:
+1. "Люблю молоко" → food: ["молоко"]
+2. "Вчера смотрел Аватар" → movies: ["Аватар"]
+3. "Я люблю Dark Souls" → gaming: ["Dark Souls"] (БЕЗ обобщения!)
+4. "Я программист" → work: ["программист"]
+5. "Обожаю K-pop" → music: ["K-pop"]
+6. "Люблю бегать" → sports: ["бег"]
 
 ❌ ПРИМЕРЫ ЧТО ИСКЛЮЧИТЬ:
 1. "Выхожу в 13:10 гулять" → исключить (просто действие без интереса)
@@ -63,6 +60,7 @@ DEEPSEEK_ANALYSIS_PROMPT = """Ты извлекаешь ОБЪЕКТИВНЫЕ �
 - "Люблю дарк соулс" → "Dark Souls" (не "Интересуется сложными играми"!)
 - Если пользователь упомянул интерес/хобби/профессию - сохрани как есть
 - БЕЗ дат, времени, обобщений - только ПОСТОЯННЫЕ характеристики
+- Если в какой-то категории нет фактов - оставь поле пустым: "gaming": []
 - Возвращай ТОЛЬКО JSON без пояснений"""
 
 
@@ -205,7 +203,7 @@ class DeepSeekAnalyzer:
     ) -> list:
         """
         Update knowledge graph with analysis results.
-        Now handles InterestEntry with status tracking.
+        Adds facts from analysis to the graph organized by category.
         
         Args:
             graph: UserKnowledgeGraph to update
@@ -214,47 +212,54 @@ class DeepSeekAnalyzer:
         Returns:
             List of newly added facts
         """
-        # Update facts
-        new_facts = analysis.get("facts", [])
-        existing_facts = set(graph.quick_facts)
         added_facts_list = []
         
-        for fact in new_facts:
-            if fact not in existing_facts:
-                graph.quick_facts.append(fact)
-                added_facts_list.append(fact)
+        # Validate and extract facts (should be dict of category -> list of facts)
+        facts = analysis.get("facts", {})
         
-        graph.quick_facts = graph.quick_facts[-10:]  # Keep last 10
+        if not isinstance(facts, dict):
+            logger.error(f"Invalid facts structure: expected dict, got {type(facts).__name__}")
+            return added_facts_list
         
-        # Update interests using new InterestEntry structure
-        interests = analysis.get("interests", {})
-        
-        for category_str, items in interests.items():
-            if not items:
+        # Process each category and its facts
+        for category_str, facts_list in facts.items():
+            # Validate facts_list is actually a list
+            if not isinstance(facts_list, list):
+                logger.warning(f"Facts for category '{category_str}' is not a list: {type(facts_list).__name__}")
                 continue
             
-            # Convert string category to TopicCategory enum
+            # Skip empty categories
+            if not facts_list:
+                continue
+            
+            # Try to convert category string to TopicCategory enum
             try:
                 category = TopicCategory(category_str)
             except ValueError:
-                logger.warning(f"Unknown category: {category_str}")
-                continue
+                logger.warning(f"Unknown category: {category_str}, using 'other'")
+                category = TopicCategory.GENERAL
             
-            for name in items:
-                # Use graph's add_interest() for proper versioning
-                graph.add_interest(
-                    category=category,
-                    name=name,
-                    status=InterestStatus.LIKES  # Default to likes when mentioned
-                )
-        
-        # Social info is NOT tracked - bot cannot reliably understand social nuances
-        # Personal info is NOT tracked - only objective facts and interests matter
-        # Patterns are NOT tracked - not important for current use case
+            # Add each fact to the graph
+            for fact in facts_list:
+                if not isinstance(fact, str):
+                    logger.warning(f"Fact is not a string: {fact}")
+                    continue
+                
+                fact = fact.strip()
+                if not fact:
+                    continue
+                
+                # Check if fact already exists in this category
+                existing_facts = graph.facts.get(category.value, [])
+                if fact.lower() not in [f.lower() for f in existing_facts]:
+                    graph.add_fact(category, fact)
+                    added_facts_list.append(fact)
+                else:
+                    logger.debug(f"Fact already exists: {fact}")
         
         graph.updated_at = datetime.now()
         
-        # Return list of new facts for display in Telegram
+        # Return list of newly added facts for display
         return added_facts_list
 
 

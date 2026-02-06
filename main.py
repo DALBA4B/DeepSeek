@@ -197,6 +197,9 @@ class DeepSeekBot:
                 return
 
             logger.info(f"Bot will respond to: {text[:50]}")
+            
+            # Show "typing" status in Telegram
+            await context.bot.send_chat_action(chat_id=message.chat_id, action="typing")
 
             # Get context for DeepSeek
             context_str = self.memory.get_context()
@@ -370,7 +373,7 @@ class DeepSeekBot:
 
     def _format_analysis_details(self, username: str, graph, show_only_new: bool = False) -> str:
         """
-        Format knowledge graph into readable message - only facts and interests.
+        Format knowledge graph into readable message - facts organized by category.
         
         Args:
             username: User's username
@@ -382,19 +385,15 @@ class DeepSeekBot:
         """
         lines = [f"<b>📊 {username}</b>"]
         
-        # Quick facts - show only new ones if requested
-        facts_to_show = getattr(graph, 'new_facts', graph.quick_facts) if show_only_new else graph.quick_facts
+        # Display facts organized by category
+        if graph.facts:
+            for category, facts_list in graph.facts.items():
+                if facts_list:
+                    facts_str = ", ".join(facts_list)
+                    lines.append(f"  <b>{category}:</b> {facts_str}")
         
-        if facts_to_show:
-            for fact in facts_to_show:
-                lines.append(f"  • {fact}")
-        
-        # All interests by category (no arbitrary limits)
-        if graph.interests:
-            for category, items in graph.interests.items():
-                if items:
-                    item_names = ", ".join(items.keys())
-                    lines.append(f"  <b>{category}:</b> {item_names}")
+        if not graph.facts:
+            lines.append("  (no facts discovered)")
         
         return "\n".join(lines)
 
