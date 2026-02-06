@@ -77,7 +77,10 @@ class DeepSeekBot:
         
         # Initialize DeepSeek analyzer (will be set in _setup_nightly_analysis if available)
         self.deepseek_analyzer = None
-        
+
+        # Initialize nightly task (will be set in _setup_nightly_analysis if available)
+        self.nightly_task = None
+
         # Setup nightly analysis if DeepSeek API key is available
         self._setup_nightly_analysis()
         
@@ -124,7 +127,10 @@ class DeepSeekBot:
                 run_minute=0
             )
             nightly_task.register(self.scheduler)
-            
+
+            # Save nightly task for later bot configuration
+            self.nightly_task = nightly_task
+
             logger.info("Nightly analysis task configured for 3:00 AM")
             
         except ImportError as e:
@@ -320,8 +326,7 @@ class DeepSeekBot:
             # Analyze each user
             results = []
             detailed_results = []
-            from deepseek_analyzer import DeepSeekAnalyzer
-            
+
             logger.info(f"DeepSeek analyzer available: {hasattr(self, 'deepseek_analyzer') and self.deepseek_analyzer is not None}")
             
             if hasattr(self, 'deepseek_analyzer') and self.deepseek_analyzer is not None:
@@ -416,22 +421,31 @@ class DeepSeekBot:
         """
         logger.info("Startup handler called - starting scheduler...")
         await self.scheduler.start()
-        
+
+        # Configure nightly analysis task with bot (now that we have a running app)
+        if self.nightly_task and self.config.chat_id:
+            self.nightly_task.set_bot(
+                bot=app.bot,
+                chat_id=self.config.chat_id,
+                format_func=self._format_analysis_details
+            )
+            logger.info("Nightly analysis task bot configured")
+
         # Load sticker pack
         try:
             sticker_pack_name = "userpack7845974bystickrubot"
             logger.info(f"Loading sticker pack '{sticker_pack_name}'...")
-            
+
             # Access sticker manager from responder
             if hasattr(self.responder, 'sticker_manager'):
                 await self.responder.sticker_manager.load_sticker_set(app.bot, sticker_pack_name)
                 logger.info("Sticker pack loaded successfully")
             else:
                 logger.warning("Responder does not have sticker_manager attribute")
-                
+
         except Exception as e:
             logger.error(f"Failed to load sticker pack: {e}")
-            
+
         logger.info("Message handler registered")
         logger.info("=" * 50)
         self._running = True

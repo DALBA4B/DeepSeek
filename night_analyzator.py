@@ -155,9 +155,9 @@ class NightlyAnalysisTask:
     """
     Nightly analysis task that runs DeepSeek analyzer.
     """
-    
+
     def __init__(
-        self, 
+        self,
         deepseek_analyzer,
         message_collector,
         memory: Optional[Any] = None,
@@ -167,7 +167,7 @@ class NightlyAnalysisTask:
     ):
         """
         Initialize nightly analysis task.
-        
+
         Args:
             deepseek_analyzer: DeepSeekAnalyzer instance
             message_collector: DailyMessageCollector instance
@@ -182,34 +182,108 @@ class NightlyAnalysisTask:
         self._knowledge_manager = knowledge_manager
         self.run_hour = run_hour
         self.run_minute = run_minute
+        self._bot = None
+        self._chat_id = None
+        self._format_analysis_details = None
+
+    def set_bot(self, bot, chat_id: int, format_func=None) -> None:
+        """
+        Set the Telegram bot for sending nightly analysis reports.
+        Call this in startup handler after Application is created.
+
+        Args:
+            bot: Telegram bot instance
+            chat_id: Chat ID where to send analysis reports
+            format_func: Optional function to format analysis details
+        """
+        self._bot = bot
+        self._chat_id = chat_id
+        self._format_analysis_details = format_func
+        logger.info(f"Nightly analysis bot configured to send reports to chat {chat_id}")
     
     async def run(self) -> None:
-        """Run the nightly analysis and clear knowledge graph cache."""
+        """Run the nightly analysis, send reports to chat, and clear cache."""
         logger.info("Starting nightly analysis task")
-        
+
         try:
+            # Send start message if bot is configured
+            if self._bot and self._chat_id:
+                try:
+                    await self._bot.send_message(
+                        chat_id=self._chat_id,
+                        text=f"🌙 Nightly analysis started at {asyncio.get_event_loop().time()}\n⏳ Processing yesterday's messages..."
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to send start message: {e}")
+
             # Collect yesterday's messages
             messages_by_user = await self._collector.get_yesterday_messages()
-            
+
             if messages_by_user:
-                # Run analysis
+                # Run analysis for all users
                 results = await self._analyzer.run_nightly_analysis(messages_by_user)
-                logger.info(f"Nightly analysis complete. Updated {len(results)} user profiles.")
+
+                # Send results
+                if self._bot and self._chat_id:
+                    try:
+                        # Count successful analyses
+                        successful = sum(1 for v in results.values() if v)
+                        result_text = f"✅ Nightly analysis complete!\nAnalyzed {successful} users from {len(messages_by_user)} total users"
+
+                        await self._bot.send_message(
+                            chat_id=self._chat_id,
+                            text=result_text
+                        )
+
+                        # Send detailed results for each user if format function is provided
+                        if self._format_analysis_details:
+                            for user_id, graph in results.items():
+                                if graph:
+                                    try:
+                                        detail_text = self._format_analysis_details(graph.username, graph, show_only_new=True)
+                                        await self._bot.send_message(
+                                            chat_id=self._chat_id,
+                                            text=detail_text,
+                                            parse_mode="HTML"
+                                        )
+                                    except Exception as e:
+                                        logger.error(f"Failed to send detail for user {user_id}: {e}")
+                    except Exception as e:
+                        logger.error(f"Failed to send analysis results: {e}")
+
+                logger.info(f"Nightly analysis complete. Updated profiles for {len(results)} users.")
             else:
                 logger.info("No messages to analyze from yesterday")
-            
+
+                if self._bot and self._chat_id:
+                    try:
+                        await self._bot.send_message(
+                            chat_id=self._chat_id,
+                            text="📭 No messages from yesterday to analyze"
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to send no-messages message: {e}")
+
             # Clear knowledge graph cache to ensure fresh data on next use
             if self._knowledge_manager:
                 self._knowledge_manager.clear_cache()
                 logger.info("Knowledge graph cache cleared after nightly analysis")
-            
+
             # Prune daily log in memory (remove analyzed messages)
             if self._memory:
                 self._memory.clear_daily_log()
                 logger.info("Daily log cleared after analysis")
-                
+
         except Exception as e:
             logger.error(f"Error in nightly analysis task: {e}")
+            if self._bot and self._chat_id:
+                try:
+                    await self._bot.send_message(
+                        chat_id=self._chat_id,
+                        text=f"❌ Nightly analysis error: {str(e)[:100]}"
+                    )
+                except Exception as send_error:
+                    logger.error(f"Failed to send error message: {send_error}")
     
     def register(self, scheduler: TaskScheduler) -> None:
         """

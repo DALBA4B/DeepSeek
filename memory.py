@@ -57,39 +57,9 @@ class RecentResponseTracker:
             # Store first 50 chars for comparison
             self._texts.append(content[:50].lower())
     
-    def is_recently_used(self, response_type: str, content: str) -> bool:
-        """
-        Check if a response was recently used.
-        
-        Args:
-            response_type: Type of response
-            content: Content to check
-            
-        Returns:
-            True if recently used
-        """
-        if response_type == "reaction":
-            return content in self._emojis
-        elif response_type == "gif":
-            return content.lower() in self._gifs
-        elif response_type == "text":
-            return content[:50].lower() in self._texts
-        return False
-    
     def get_avoid_list(self) -> List[str]:
         """Get list of recent responses to avoid."""
         return list(self._all_responses)
-    
-    def get_recent_emojis(self) -> List[str]:
-        """Get recently used emojis."""
-        return list(self._emojis)
-    
-    def clear(self) -> None:
-        """Clear all tracked responses."""
-        self._emojis.clear()
-        self._gifs.clear()
-        self._texts.clear()
-        self._all_responses.clear()
 
 
 class MemoryStorage(ABC):

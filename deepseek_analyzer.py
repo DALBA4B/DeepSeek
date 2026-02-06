@@ -13,7 +13,7 @@ from typing import List, Dict, Any, Optional
 from openai import OpenAI
 
 from models import ChatMessage, InterestStatus
-from graph_memory import UserKnowledgeGraph, KnowledgeGraphManager, InterestNode, TopicCategory
+from graph_memory import UserKnowledgeGraph, KnowledgeGraphManager, TopicCategory
 
 logger = logging.getLogger(__name__)
 
@@ -258,9 +258,40 @@ class DeepSeekAnalyzer:
                     logger.debug(f"Fact already exists: {fact}")
         
         graph.updated_at = datetime.now()
-        
+
         # Return list of newly added facts for display
         return added_facts_list
+
+    async def run_nightly_analysis(
+        self,
+        messages_by_user: Dict[int, List[ChatMessage]]
+    ) -> Dict[int, Optional[UserKnowledgeGraph]]:
+        """
+        Analyze messages for multiple users - wrapper for batch nightly analysis.
+
+        Args:
+            messages_by_user: Dict mapping user_id to list of messages
+
+        Returns:
+            Dict mapping user_id to their analyzed knowledge graph (or None if failed)
+        """
+        results = {}
+
+        for user_id, messages in messages_by_user.items():
+            # Get username from first message
+            username = messages[0].username if messages else f"user_{user_id}"
+
+            logger.info(f"Analyzing {len(messages)} messages for {username}")
+
+            try:
+                graph = await self.analyze_user_messages(user_id, username, messages)
+                results[user_id] = graph
+            except Exception as e:
+                logger.error(f"Failed to analyze user {user_id}: {e}")
+                results[user_id] = None
+
+        logger.info(f"Nightly analysis complete: {sum(1 for v in results.values() if v)} users analyzed")
+        return results
 
 
 class DailyMessageCollector:

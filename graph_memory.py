@@ -133,15 +133,6 @@ TOPIC_KEYWORDS: Dict[TopicCategory, List[str]] = {
 
 
 @dataclass
-class InterestNode:
-    """A node in the interest graph."""
-    name: str
-    details: Dict[str, Any] = field(default_factory=dict)
-    last_mentioned: datetime = field(default_factory=datetime.now)
-    mention_count: int = 1
-
-
-@dataclass
 class UserKnowledgeGraph:
     """
     Knowledge graph for a single user.

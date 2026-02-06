@@ -166,18 +166,6 @@ def load_config() -> BotConfig:
     )
 
 
-# Available emojis for reactions (Telegram supported)
-AVAILABLE_EMOJIS: List[str] = [
-    "👍", "👎", "❤️", "🔥", "🥰", "👏", "😂", "🤔", "🤯", "😱",
-    "🤬", "😢", "🎉", "🤩", "🤮", "💩", "🙏", "👌", "🕊️", "🤡",
-    "🥱", "🥴", "😍", "💯", "🤣", "⚡", "🍌", "🏆", "💔", "🤨",
-    "😐", "🍓", "💋", "🖕", "😈", "😴", "😭", "🤓", "👻", "🎃",
-    "🙈", "😇", "😨", "🤝", "✍️", "🤗", "🎅", "🎄", "☃️", "💅",
-    "🤪", "🗿", "🆒", "💘", "🙉", "🦄", "😘", "💊", "🙊", "😎",
-    "👾", "🤷", "😡"
-]
-
-
 # Singleton config instance (lazy loaded)
 _config: Optional[BotConfig] = None
 
@@ -196,40 +184,3 @@ def get_config() -> BotConfig:
     if _config is None:
         _config = load_config()
     return _config
-
-
-# For backward compatibility - expose commonly used values at module level
-# These will be loaded lazily when first accessed
-def __getattr__(name: str):
-    """
-    Lazy attribute access for backward compatibility.
-    Allows using config.TELEGRAM_TOKEN instead of config.get_config().telegram_token
-    """
-    config = get_config()
-    
-    # Map old names to new config attributes
-    attr_map = {
-        "TELEGRAM_TOKEN": "telegram_token",
-        "DEEPSEEK_API_KEY": "deepseek_api_key",
-        "GIPHY_API_KEY": "giphy_api_key",
-        "FIREBASE_CRED_PATH": "firebase_cred_path",
-        "BOT_NAME": "bot_name",
-        "CHAT_ID": "chat_id",
-        "SHORT_MEMORY_LIMIT": "short_memory_limit",
-        "CONTEXT_MESSAGES_COUNT": "context_messages_count",
-        "DEEPSEEK_BASE_URL": "deepseek_base_url",
-        "DEEPSEEK_MODEL": "deepseek_model",
-        "DEEPSEEK_MAX_TOKENS": "deepseek_max_tokens",
-        "DEEPSEEK_TEMPERATURE": "deepseek_temperature",
-        "RANDOM_RESPONSE_PROBABILITY": "random_response_probability",
-        "GIPHY_API_URL": "giphy_api_url",
-        "GIPHY_LIMIT": "giphy_limit",
-        "GIPHY_RATING": "giphy_rating",
-        "LOG_LEVEL": "log_level",
-        "LOG_FORMAT": "log_format",
-    }
-    
-    if name in attr_map:
-        return getattr(config, attr_map[name])
-    
-    raise AttributeError(f"module 'config' has no attribute '{name}'")
