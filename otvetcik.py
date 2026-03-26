@@ -61,21 +61,24 @@ GIF_ALTERNATIVE_QUERIES: Dict[str, List[str]] = {
 
 class ResponseParser:
     """Parses DeepSeek responses to determine type and content."""
-    
+
     # Response prefixes
     PREFIX_GIPHY = "GIPHY:"
     PREFIX_REACT = "REACT:"
     PREFIX_STICKER = "STICKER:"
-    
+
     @classmethod
-    def parse(cls, response_text: str) -> ParsedResponse:
+    def parse(cls, response_text: str, text_only_mode: bool = True) -> ParsedResponse:
         """
         Parse the response to determine its type and content.
         Case-insensitive check for prefixes.
-        
+
+        In text_only_mode: strips any prefixes and always returns TEXT.
+
         Args:
             response_text: The response from DeepSeek (may be in special format)
-        
+            text_only_mode: If True, force all responses to TEXT
+
         Returns:
             ParsedResponse with type and content
         """
@@ -84,16 +87,28 @@ class ResponseParser:
 
         if text_upper.startswith(cls.PREFIX_GIPHY):
             content = text[len(cls.PREFIX_GIPHY):].strip()
+            if text_only_mode:
+                # GIPHY query is not meaningful text — return empty to skip
+                logger.info(f"TEXT_ONLY_MODE: blocked GIPHY response: {content}")
+                return ParsedResponse(ResponseType.TEXT, "")
             logger.info(f"Parsed GIPHY response: {content}")
             return ParsedResponse(ResponseType.GIF, content)
 
         if text_upper.startswith(cls.PREFIX_REACT):
             content = text[len(cls.PREFIX_REACT):].strip()
+            if text_only_mode:
+                # Emoji is fine as text message
+                logger.info(f"TEXT_ONLY_MODE: converted REACT to text: {content}")
+                return ParsedResponse(ResponseType.TEXT, content)
             logger.info(f"Parsed REACT response: {content}")
             return ParsedResponse(ResponseType.REACTION, content)
 
         if text_upper.startswith(cls.PREFIX_STICKER):
             content = text[len(cls.PREFIX_STICKER):].strip().lower()
+            if text_only_mode:
+                # Sticker emotion is not meaningful text — return empty to skip
+                logger.info(f"TEXT_ONLY_MODE: blocked STICKER response: {content}")
+                return ParsedResponse(ResponseType.TEXT, "")
             logger.info(f"Parsed STICKER response: {content}")
             return ParsedResponse(ResponseType.STICKER, content)
 
@@ -249,7 +264,7 @@ class Responder:
         Returns:
             True if response was sent successfully
         """
-        parsed = ResponseParser.parse(response_text)
+        parsed = ResponseParser.parse(response_text, text_only_mode=self.config.text_only_mode)
 
         try:
             if parsed.response_type == ResponseType.TEXT:
@@ -270,14 +285,17 @@ class Responder:
     async def _send_text(self, message: Message, text: str) -> bool:
         """
         Send a text message reply.
-        
+
         Args:
             message: Message to reply to
             text: Text to send
-            
+
         Returns:
             True if sent successfully
         """
+        if not text:
+            logger.info("Empty text response, skipping send")
+            return False
         try:
             await message.reply_text(text)
             logger.info(f"Text response sent: {text[:50]}")

@@ -226,7 +226,7 @@ class DeepSeekBot:
             # Save bot's response to short-term memory (so bot can see what it said)
             if success:
                 # Parse response to get actual content (without REACT:, GIPHY:, etc.)
-                parsed = ResponseParser.parse(response)
+                parsed = ResponseParser.parse(response, text_only_mode=self.config.text_only_mode)
                 self.memory.add_bot_response(
                     text=parsed.content,
                     message_id=0  # Bot responses don't have message IDs in memory

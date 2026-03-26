@@ -119,8 +119,9 @@ class Brain:
                 base_url=config.deepseek_base_url
             )
             self._system_prompt = get_system_prompt(
-                config.bot_name, 
-                self._available_stickers
+                config.bot_name,
+                self._available_stickers,
+                text_only_mode=config.text_only_mode
             )
             logger.info("Brain initialized: DeepSeek client ready")
         except Exception as e:

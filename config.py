@@ -149,6 +149,7 @@ def load_config() -> BotConfig:
         # Response settings
         random_response_probability=_get_optional_float("RANDOM_RESPONSE_PROBABILITY", 0.1),
         use_smart_respond=os.getenv("USE_SMART_RESPOND", "false").lower() in ("true", "1", "yes"),
+        text_only_mode=os.getenv("TEXT_ONLY_MODE", "true").lower() in ("true", "1", "yes"),
         
         # Giphy settings
         giphy_api_url=os.getenv("GIPHY_API_URL", "https://api.giphy.com/v1/gifs/search"),
