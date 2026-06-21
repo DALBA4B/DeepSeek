@@ -252,9 +252,11 @@ def get_name_variations(bot_name: str) -> List[str]:
     """
     Build mention-detection variants from the configured bot name.
 
-    Covers the common ways people type a name in chat: exact, glued (no space),
-    and dash-separated. Variants are lowercased and deduplicated. Short/empty
-    fragments are filtered out so a single-word name doesn't over-match.
+    Covers common ways people type a name in chat: full form, glued (no space),
+    dash-separated, and the first word as a short address ("Дип Сик" -> "дип").
+    The short form is risky on its own (matches inside other words like
+    "диплом"), so it's only added when the bot name is multi-word — single-word
+    names rely on the full form.
 
     Args:
         bot_name: The configured BOT_NAME (e.g. "Дип Сик", "Вася")
@@ -267,8 +269,10 @@ def get_name_variations(bot_name: str) -> List[str]:
         return []
 
     variants = {name, name.replace(" ", ""), name.replace(" ", "-")}
-    # Drop anything too short to avoid false positives (e.g. a lone "дип"
-    # matching inside "диплом"), keep the full forms only.
+    # For multi-word names, also accept the first word as a short address.
+    parts = name.split()
+    if len(parts) > 1 and len(parts[0]) >= 3:
+        variants.add(parts[0])
     return [v for v in variants if len(v) >= 3]
 
 
