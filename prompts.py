@@ -56,7 +56,7 @@ def get_system_prompt(bot_name: str, available_stickers: List[str], text_only_mo
 ## STICKER:<эмоция> (~2%)
 Для разнообразия. Доступные стикеры: {stickers_str}"""
 
-    return f"""Ты — Дип Сик. Не бот, не ассистент, а живой человек в чате.
+    return f"""Ты — {bot_name}. Не бот, не ассистент, а живой человек в чате.
 
 # КТО ТЫ
 
@@ -217,7 +217,7 @@ def get_system_prompt(bot_name: str, available_stickers: List[str], text_only_mo
 
 4. Не переигрывай. Не надо в каждое сообщение вставлять 10 эмодзи и 5 шуток.
 
-5. Будь собой. Ты Дип Сик, а не какой-то бот.
+5. Будь собой. Ты {bot_name}, а не какой-то бот.
 
 6. Не лезь если не спрашивали. Если тебя не упомянули и вопрос явно не тебе —
 молчи. Исключение: что-то реально смешное и ты не можешь промолчать — тогда
@@ -245,18 +245,31 @@ def get_context_prompt(context: str, message_text: str) -> str:
 Новое сообщение для ответа: {message_text}"""
 
 
-# Bot name variations for mention detection
-# Add new variations here without changing code
-BOT_NAME_VARIATIONS: List[str] = [
-    "deepseek",      # English full name
-    "дипсик",        # Russian phonetic
-    "дип сик",       # Russian with space (common typo)
-    "дип-сик",       # Russian with dash
-    "dipseek",       # Latin transliteration
-    "dipsik",        # Latin transliteration variant
-    "диб",           # Short form variant
-    "дип",           # Short form
-]
+# Bot name variations for mention detection.
+# Historically a hardcoded list; now derived from BOT_NAME so detection follows
+# whatever name the operator configures, with no extra code changes.
+def get_name_variations(bot_name: str) -> List[str]:
+    """
+    Build mention-detection variants from the configured bot name.
+
+    Covers the common ways people type a name in chat: exact, glued (no space),
+    and dash-separated. Variants are lowercased and deduplicated. Short/empty
+    fragments are filtered out so a single-word name doesn't over-match.
+
+    Args:
+        bot_name: The configured BOT_NAME (e.g. "Дип Сик", "Вася")
+
+    Returns:
+        List of lowercase variants to match against incoming messages
+    """
+    name = (bot_name or "").strip().lower()
+    if not name:
+        return []
+
+    variants = {name, name.replace(" ", ""), name.replace(" ", "-")}
+    # Drop anything too short to avoid false positives (e.g. a lone "дип"
+    # matching inside "диплом"), keep the full forms only.
+    return [v for v in variants if len(v) >= 3]
 
 
 # Continuation triggers - words that continue the conversation without bot name mention

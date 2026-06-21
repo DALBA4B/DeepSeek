@@ -10,6 +10,8 @@ from datetime import datetime, time, timedelta
 from typing import Callable, Optional, Awaitable, Any
 import pytz
 
+from utils import get_now
+
 logger = logging.getLogger(__name__)
 
 
@@ -163,7 +165,8 @@ class NightlyAnalysisTask:
         memory: Optional[Any] = None,
         knowledge_manager: Optional[Any] = None,
         run_hour: int = 3,
-        run_minute: int = 0
+        run_minute: int = 0,
+        timezone: str = "UTC"
     ):
         """
         Initialize nightly analysis task.
@@ -175,6 +178,7 @@ class NightlyAnalysisTask:
             knowledge_manager: KnowledgeGraphManager instance (optional) for cache clearing
             run_hour: Hour to run (default: 3 AM)
             run_minute: Minute to run (default: 0)
+            timezone: IANA timezone name used for human-readable report timestamps
         """
         self._analyzer = deepseek_analyzer
         self._collector = message_collector
@@ -182,6 +186,7 @@ class NightlyAnalysisTask:
         self._knowledge_manager = knowledge_manager
         self.run_hour = run_hour
         self.run_minute = run_minute
+        self._timezone = timezone
         self._bot = None
         self._chat_id = None
         self._format_analysis_details = None
@@ -209,9 +214,10 @@ class NightlyAnalysisTask:
             # Send start message if bot is configured
             if self._bot and self._chat_id:
                 try:
+                    started_at = get_now(self._timezone).strftime("%H:%M:%S")
                     await self._bot.send_message(
                         chat_id=self._chat_id,
-                        text=f"🌙 Nightly analysis started at {asyncio.get_event_loop().time()}\n⏳ Processing yesterday's messages..."
+                        text=f"🌙 Nightly analysis started at {started_at}\n⏳ Processing yesterday's messages..."
                     )
                 except Exception as e:
                     logger.error(f"Failed to send start message: {e}")

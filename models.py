@@ -9,6 +9,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
+from utils import get_now
+
 
 class ResponseType(Enum):
     """Types of responses the bot can send."""
@@ -39,7 +41,7 @@ class InterestEntry:
     """
     name: str
     status: InterestStatus
-    added_at: datetime = field(default_factory=datetime.now)
+    added_at: datetime = field(default_factory=lambda: get_now("UTC"))
     current: bool = True  # Is this the current status for this interest?
     
     def to_dict(self) -> dict:
@@ -90,7 +92,7 @@ class ChatMessage:
     username: str
     text: str
     message_id: int
-    timestamp: datetime = field(default_factory=lambda: datetime.now())
+    timestamp: datetime = field(default_factory=lambda: get_now("UTC"))
 
     def to_dict(self) -> dict:
         """Convert to dictionary for Firebase storage."""
@@ -102,6 +104,41 @@ class ChatMessage:
             "timestamp": self.timestamp,
             "date": self.timestamp.date().isoformat()  # Add date field for Firebase queries
         }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ChatMessage":
+        """
+        Build a ChatMessage from a stored dict (e.g. a Firestore document).
+
+        Tolerant by design: ignores extra fields (like the `date` query helper
+        stored alongside the message) and normalizes the timestamp whether it
+        was stored as an ISO string or as a native Firestore datetime. This is
+        the inverse of `to_dict` and avoids the KeyError/TypeError that
+        `ChatMessage(**data)` hit on the extra `date` key.
+
+        Args:
+            data: Dict from storage
+
+        Returns:
+            A ChatMessage instance
+        """
+        ts = data.get("timestamp")
+        if isinstance(ts, str):
+            try:
+                ts = datetime.fromisoformat(ts)
+            except ValueError:
+                ts = get_now("UTC")
+        elif not isinstance(ts, datetime):
+            # Missing or unexpected type -> fall back to now rather than crash
+            ts = get_now("UTC")
+
+        return cls(
+            user_id=data.get("user_id", 0),
+            username=data.get("username", "Unknown"),
+            text=data.get("text", ""),
+            message_id=data.get("message_id", 0),
+            timestamp=ts,
+        )
 
     def to_context_line(self) -> str:
         """Format message for context string."""
@@ -133,6 +170,9 @@ class BotConfig:
     deepseek_api_key: str
     giphy_api_key: str
     firebase_cred_path: str
+
+    # Optional API keys (V2 features such as LightRAG embeddings)
+    openai_api_key: Optional[str] = None
     
     # Bot settings
     bot_name: str = "Вася"
@@ -140,12 +180,11 @@ class BotConfig:
     
     # Memory settings
     short_memory_limit: int = 30
-    context_messages_count: int = 35
+    context_messages_count: int = 20
     
     # DeepSeek settings
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-chat"
-    deepseek_max_tokens: int = 150
     deepseek_temperature: float = 1.0
     
     # Response settings
@@ -180,7 +219,7 @@ class UserInfo:
     """
     user_id: int
     username: str
-    last_seen: datetime = field(default_factory=lambda: datetime.now())
+    last_seen: datetime = field(default_factory=lambda: get_now("UTC"))
 
     def to_dict(self) -> dict:
         """Convert to dictionary for Firebase storage."""

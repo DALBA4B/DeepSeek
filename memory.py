@@ -7,7 +7,6 @@ Now includes bot's own responses in short-term memory.
 
 import logging
 from collections import deque
-from datetime import datetime
 from typing import List, Optional, Deque
 from abc import ABC, abstractmethod
 import json
@@ -17,6 +16,7 @@ from firebase_admin import credentials, firestore
 
 from models import ChatMessage, UserInfo, BotConfig
 from prompts import FALLBACK_RESPONSES
+from utils import get_now, to_aware
 
 logger = logging.getLogger(__name__)
 
@@ -218,22 +218,24 @@ class Memory:
         Returns:
             Created ChatMessage instance
         """
-        # Create message object
+        # Create message object (timezone-aware, in the configured timezone)
+        now = get_now(self.config.timezone)
         message = ChatMessage(
             user_id=user_id,
             username=username,
             text=text,
             message_id=message_id,
-            timestamp=datetime.now()
+            timestamp=now
         )
 
         # Add to short-term memory (deque auto-trims to maxlen)
         self._short_term.append(message)
         
-        # Add to daily log ONLY if message is from today
-        # This prevents counter corruption after bot restart/redeploy
-        message_date = message.timestamp.date()
-        today = datetime.now().date()
+        # Add to daily log ONLY if message is from today (in configured timezone).
+        # This prevents counter corruption after bot restart/redeploy, and keeps
+        # "today" stable across servers that may run in UTC (Railway/Render).
+        message_date = to_aware(message.timestamp, self.config.timezone).date()
+        today = now.date()
         
         if message_date == today:
             self._daily_log.append(message)
@@ -249,7 +251,7 @@ class Memory:
             user = UserInfo(
                 user_id=user_id,
                 username=username,
-                last_seen=datetime.now()
+                last_seen=now
             )
             self._storage.update_user(user)
 
@@ -375,11 +377,16 @@ class Memory:
         Used to prevent RAM from growing indefinitely.
         """
         if hasattr(self, '_daily_log'):
-            # Keep messages from current day (since midnight)
-            today_midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-            
-            # Filter in place
-            self._daily_log = [msg for msg in self._daily_log if msg.timestamp >= today_midnight]
-            
-            self._last_log_clear = datetime.now()
+            # Keep messages from current day (since midnight, in configured timezone).
+            # Normalize each timestamp to aware-in-config-tz so naive legacy timestamps
+            # compare correctly against the aware midnight boundary.
+            now = get_now(self.config.timezone)
+            today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+            self._daily_log = [
+                msg for msg in self._daily_log
+                if to_aware(msg.timestamp, self.config.timezone) >= today_midnight
+            ]
+
+            self._last_log_clear = now
             logger.info(f"Daily log pruned. Retained {len(self._daily_log)} messages.")

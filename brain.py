@@ -12,7 +12,7 @@ from typing import List, Optional
 from openai import OpenAI
 
 from models import BotConfig, ChatMessage, RequestComplexity, TokenRange
-from prompts import get_system_prompt, get_context_prompt, BOT_NAME_VARIATIONS, CONTINUATION_TRIGGERS, FALLBACK_RESPONSES
+from prompts import get_system_prompt, get_context_prompt, get_name_variations, CONTINUATION_TRIGGERS, FALLBACK_RESPONSES
 from graph_memory import KnowledgeGraphManager
 
 logger = logging.getLogger(__name__)
@@ -112,6 +112,9 @@ class Brain:
         self.config = config
         self._available_stickers = available_stickers or ["happy", "sad", "laugh", "cool", "think", "wtf"]
         self._knowledge_manager = knowledge_manager
+        # Mention variants derived from the configured bot name so detection
+        # follows BOT_NAME without hardcoded lists.
+        self._name_variations = get_name_variations(config.bot_name)
         
         try:
             self.client = OpenAI(
@@ -160,9 +163,9 @@ class Brain:
             True if bot should respond, False otherwise
         """
         message_lower = message_text.lower()
-        
+
         # Check if bot name variations are mentioned
-        for variation in BOT_NAME_VARIATIONS:
+        for variation in self._name_variations:
             if variation in message_lower:
                 logger.info(f"Should respond: bot name '{variation}' mentioned")
                 return True
@@ -207,9 +210,9 @@ class Brain:
             True if bot should respond
         """
         message_lower = message_text.lower()
-        
+
         # Always respond if bot name mentioned
-        for variation in BOT_NAME_VARIATIONS:
+        for variation in self._name_variations:
             if variation in message_lower:
                 logger.info(f"Smart respond: bot name '{variation}' mentioned")
                 return True

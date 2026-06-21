@@ -16,7 +16,7 @@ from config import get_config, ConfigError
 from models import BotConfig
 from memory import Memory, RecentResponseTracker
 from brain import Brain
-from otvetcik import Responder, ResponseParser
+from responder import Responder, ResponseParser
 from graph_memory import KnowledgeGraphManager
 from night_analyzator import TaskScheduler, NightlyAnalysisTask
 
@@ -115,7 +115,7 @@ class DeepSeekBot:
             self.deepseek_analyzer = analyzer
             
             # Pass memory to collector for fallback/primary source
-            collector = DailyMessageCollector(firebase_db, memory=self.memory)
+            collector = DailyMessageCollector(firebase_db, memory=self.memory, timezone=self.config.timezone)
             
             # Pass memory to task for nightly cleanup
             nightly_task = NightlyAnalysisTask(
@@ -124,7 +124,8 @@ class DeepSeekBot:
                 memory=self.memory,
                 knowledge_manager=self.knowledge_manager,
                 run_hour=3,
-                run_minute=0
+                run_minute=0,
+                timezone=self.config.timezone
             )
             nightly_task.register(self.scheduler)
 

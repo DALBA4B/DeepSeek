@@ -14,6 +14,7 @@ from openai import OpenAI
 
 from models import ChatMessage, InterestStatus
 from graph_memory import UserKnowledgeGraph, KnowledgeGraphManager, TopicCategory
+from utils import get_now
 
 logger = logging.getLogger(__name__)
 
@@ -257,7 +258,7 @@ class DeepSeekAnalyzer:
                 else:
                     logger.debug(f"Fact already exists: {fact}")
         
-        graph.updated_at = datetime.now()
+        graph.updated_at = get_now("UTC")
 
         # Return list of newly added facts for display
         return added_facts_list
@@ -297,29 +298,32 @@ class DeepSeekAnalyzer:
 class DailyMessageCollector:
     """Collects messages for daily analysis for nightly DeepSeek analysis."""
     
-    def __init__(self, firebase_db=None, memory=None):
+    def __init__(self, firebase_db=None, memory=None, timezone: str = "UTC"):
         """
         Initialize collector.
-        
+
         Args:
             firebase_db: Optional Firebase client
             memory: Optional Memory instance for fallback
+            timezone: IANA timezone name used when computing "today"/"yesterday"
+                      so the Firebase `date` query matches how messages were stored
         """
         self.db = firebase_db
         self.memory = memory
-    
+        self._timezone = timezone
+
     async def get_messages_for_day(self, date: Optional[datetime] = None) -> Dict[int, List[ChatMessage]]:
         """
         Get all messages for a specific day grouped by user.
-        
+
         Args:
-            date: Date to fetch (defaults to today)
-            
+            date: Date to fetch (defaults to today, in configured timezone)
+
         Returns:
             Dict mapping user_id to list of messages
         """
         if date is None:
-            date = datetime.now()
+            date = get_now(self._timezone)
         
         messages_by_user = {}
         
@@ -332,12 +336,11 @@ class DailyMessageCollector:
                 
                 for doc in docs:
                     msg_data = doc.to_dict()
-                    
-                    # Parse timestamp from Firebase (stored as string)
-                    if isinstance(msg_data.get('timestamp'), str):
-                        msg_data['timestamp'] = datetime.fromisoformat(msg_data['timestamp'])
-                    
-                    msg = ChatMessage(**msg_data)
+                    try:
+                        msg = ChatMessage.from_dict(msg_data)
+                    except Exception as e:
+                        logger.warning(f"Skipping malformed message document: {e}")
+                        continue
                     if msg.user_id not in messages_by_user:
                         messages_by_user[msg.user_id] = []
                     messages_by_user[msg.user_id].append(msg)
@@ -372,5 +375,5 @@ class DailyMessageCollector:
         Returns:
             Dict mapping user_id to list of messages from yesterday
         """
-        yesterday = datetime.now() - timedelta(days=1)
+        yesterday = get_now(self._timezone) - timedelta(days=1)
         return await self.get_messages_for_day(yesterday)

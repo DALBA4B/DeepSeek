@@ -70,12 +70,17 @@ python main.py
 ├── config.py               # Загрузка и валидация конфигурации
 ├── models.py               # Модели данных (dataclasses)
 ├── prompts.py              # Системные промпты для DeepSeek
+├── utils.py                # Общие хелперы (timezone-aware время)
 ├── main.py                 # Точка входа, класс DeepSeekBot
 ├── memory.py               # Двухуровневая память (RAM + Firebase)
 ├── brain.py                # AI логика и генерация ответов
-├── responder.py            # Отправка разных типов ответов
-├── test_name.py            # Тесты для проверки функциональности
+├── responder.py            # Отправка разных типов ответов (текст/реакция/гиф/стикер)
+├── graph_memory.py         # Граф знаний о пользователях
+├── deepseek_analyzer.py    # Ночной анализ сообщений → граф знаний
+├── night_analyzator.py     # Планировщик ночных задач
 ├── requirements.txt        # Зависимости Python
+├── railway.json            # Конфиг деплоя на Railway
+├── render.yaml             # Конфиг деплоя на Render
 └── README.md               # Этот файл
 ```
 
@@ -203,16 +208,12 @@ class BotConfig:
 
 ## Тестирование
 
-Запустить тесты:
+Автоматические тесты пока не подключены (в планах на V2). Для проверки
+запусти бота локально и понаблюдай за логами (см. «Быстрый старт»):
 
 ```bash
-python test_name.py
+python main.py
 ```
-
-Тесты проверяют:
-- Загрузку конфигурации
-- Детекцию упоминаний имени бота
-- Логику `should_respond()`
 
 ## Кастомизация
 
@@ -227,22 +228,17 @@ def get_system_prompt(bot_name: str, available_stickers: List[str]) -> str:
     """
 ```
 
-### Добавление вариаций имени
+### Изменение имени и вариаций упоминаний
 
-В `prompts.py` добавь в список `BOT_NAME_VARIATIONS`:
-
-```python
-BOT_NAME_VARIATIONS = [
-    "deepseek",
-    "дипсик",
-    "твоё_новое_имя",  # Добавь сюда
-]
-```
+Имя бота берётся из `BOT_NAME` в `.env` и автоматически подставляется в персону.
+Вариации для детекта упоминаний строятся из `BOT_NAME` функцией
+`get_name_variations()` в `prompts.py` (точное написание, слитно и через дефис),
+так что менять код не нужно — достаточно поменять `BOT_NAME`.
 
 ### Добавление стикеров
 
 ```python
-from otvetcik import StickerManager
+from responder import StickerManager
 
 stickers = StickerManager()
 stickers.add_sticker("excited", "CAACAgIAAxkBAAE...")

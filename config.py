@@ -129,6 +129,9 @@ def load_config() -> BotConfig:
         deepseek_api_key=_get_required_env("DEEPSEEK_API_KEY"),
         giphy_api_key=_get_required_env("GIPHY_API_KEY"),
         firebase_cred_path=_get_firebase_credentials(),
+
+        # Optional API keys (used by V2 features such as LightRAG embeddings)
+        openai_api_key=os.getenv("OPENAI_API_KEY"),
         
         # Bot settings
         bot_name=os.getenv("BOT_NAME", "Вася"),
@@ -137,13 +140,12 @@ def load_config() -> BotConfig:
         # Memory settings
         # short_memory_limit: recent context for quick responses (RAM deque with N last messages)
         # All messages for the entire day are kept in daily_log (RAM) for DeepSeek analysis
-        short_memory_limit=_get_optional_int("SHORT_MEMORY_LIMIT", 30) or 30,
-        context_messages_count=_get_optional_int("CONTEXT_MESSAGES_COUNT", 20) or 20,
+        short_memory_limit=_get_optional_int("SHORT_MEMORY_LIMIT", 30),
+        context_messages_count=_get_optional_int("CONTEXT_MESSAGES_COUNT", 20),
         
         # DeepSeek settings
         deepseek_base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-        deepseek_model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
-        deepseek_max_tokens=_get_optional_int("DEEPSEEK_MAX_TOKENS", 150) or 150,
+        deepseek_model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
         deepseek_temperature=_get_optional_float("DEEPSEEK_TEMPERATURE", 1.0),
         
         # Response settings
@@ -153,12 +155,12 @@ def load_config() -> BotConfig:
         
         # Giphy settings
         giphy_api_url=os.getenv("GIPHY_API_URL", "https://api.giphy.com/v1/gifs/search"),
-        giphy_limit=_get_optional_int("GIPHY_LIMIT", 10) or 10,
+        giphy_limit=_get_optional_int("GIPHY_LIMIT", 10),
         giphy_rating=os.getenv("GIPHY_RATING", "pg-13"),
-        
+
         # Scheduler settings
-        nightly_analysis_hour=_get_optional_int("NIGHTLY_ANALYSIS_HOUR", 3) or 3,
-        nightly_analysis_minute=_get_optional_int("NIGHTLY_ANALYSIS_MINUTE", 0) or 0,
+        nightly_analysis_hour=_get_optional_int("NIGHTLY_ANALYSIS_HOUR", 3),
+        nightly_analysis_minute=_get_optional_int("NIGHTLY_ANALYSIS_MINUTE", 0),
         timezone=os.getenv("TIMEZONE", "Europe/Kiev"),
         
         # Logging

@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Any, Set
 from enum import Enum
 
 from models import InterestEntry, InterestStatus
+from utils import get_now
 
 logger = logging.getLogger(__name__)
 
@@ -145,8 +146,8 @@ class UserKnowledgeGraph:
     facts: Dict[str, List[str]] = field(default_factory=dict)
     
     # Metadata
-    created_at: datetime = field(default_factory=datetime.now)
-    updated_at: datetime = field(default_factory=datetime.now)
+    created_at: datetime = field(default_factory=lambda: get_now("UTC"))
+    updated_at: datetime = field(default_factory=lambda: get_now("UTC"))
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for Firebase storage."""
@@ -336,7 +337,7 @@ class KnowledgeGraphManager:
             return False
         
         try:
-            graph.updated_at = datetime.now()
+            graph.updated_at = get_now("UTC")
             self._db.collection('knowledge_graphs').document(str(graph.user_id)).set(
                 graph.to_dict()
             )
