@@ -7,6 +7,7 @@ Now includes bot's own responses in short-term memory.
 
 import logging
 from collections import deque
+from datetime import datetime
 from typing import List, Optional, Deque
 from abc import ABC, abstractmethod
 import json
@@ -203,7 +204,8 @@ class Memory:
         username: str,
         text: str,
         message_id: int,
-        save_to_firebase: bool = True
+        save_to_firebase: bool = True,
+        reply_to_text: Optional[str] = None,
     ) -> ChatMessage:
         """
         Add a new message to both short-term and long-term memory.
@@ -214,7 +216,10 @@ class Memory:
             text: Message text
             message_id: Telegram message ID
             save_to_firebase: Whether to save to long-term storage (default: True)
-            
+            reply_to_text: If this message is a reply, the text of the replied-to
+                message. Kept on the ChatMessage so it shows up in context lines
+                and in the nightly RAG ingest (reply context stays with its block).
+
         Returns:
             Created ChatMessage instance
         """
@@ -225,7 +230,8 @@ class Memory:
             username=username,
             text=text,
             message_id=message_id,
-            timestamp=now
+            timestamp=now,
+            reply_to_text=reply_to_text,
         )
 
         # Add to short-term memory (deque auto-trims to maxlen)
@@ -309,6 +315,90 @@ class Memory:
 
         context_lines = [msg.to_context_line() for msg in recent]
         return "\n".join(context_lines)
+
+    def get_recent_context_lines(self) -> List[str]:
+        """
+        Return recent messages already formatted as context lines.
+
+        This is what the V2 classifier and brain want: a list of
+        "Name: text" (with reply context inlined) strings, not one blob.
+
+        Returns:
+            List of formatted context strings (newest last), empty if none.
+        """
+        recent = self.get_recent()
+        return [msg.to_context_line() for msg in recent] if recent else []
+
+    def get_messages_for_period(
+        self,
+        since: Optional[datetime] = None,
+        until: Optional[datetime] = None,
+    ) -> List[ChatMessage]:
+        """
+        Fetch all user messages in a time window for the nightly RAG ingest.
+
+        Source priority: Firebase (durable across restarts) → daily_log (RAM
+        fallback when Firebase is unavailable). Messages from the bot itself
+        (user_id == BOT_USER_ID) are excluded — they are already part of the
+        conversation context, not facts to extract.
+
+        Args:
+            since: Inclusive lower bound (timezone-aware recommended). If None,
+                no lower bound (useful for "everything since last ingest").
+            until: Exclusive upper bound. If None, now (in configured timezone).
+
+        Returns:
+            Chronologically ordered list of ChatMessage in the window.
+        """
+        tz = self.config.timezone
+        if until is None:
+            until = get_now(tz)
+
+        messages: List[ChatMessage] = []
+
+        # Try Firebase first (survives restarts/redeploys)
+        if self._storage is not None:
+            try:
+                db = self._storage.get_client()
+                if db is not None:
+                    # Firestore stores timestamp either as a native datetime or
+                    # as an ISO string (older rows). Query the whole collection
+                    # and filter in Python — the mixed formats make a server-side
+                    # where() unreliable, and message volumes are daily-scale.
+                    docs = db.collection("messages").stream()
+                    for doc in docs:
+                        msg = ChatMessage.from_dict(doc.to_dict())
+                        if msg.user_id == self.BOT_USER_ID:
+                            continue
+                        ts = to_aware(msg.timestamp, tz)
+                        if since is not None and ts < since:
+                            continue
+                        if ts >= until:
+                            continue
+                        messages.append(msg)
+                    if messages:
+                        logger.info(
+                            "Firebase returned %d messages in the ingest window",
+                            len(messages),
+                        )
+                        messages.sort(key=lambda m: m.timestamp)
+                        return messages
+            except Exception as e:
+                logger.warning(f"Firebase query for period failed, falling back to daily_log: {e}")
+
+        # Fallback: daily_log (RAM only — empty after a restart)
+        for msg in self._daily_log:
+            if msg.user_id == self.BOT_USER_ID:
+                continue
+            ts = to_aware(msg.timestamp, tz)
+            if since is not None and ts < since:
+                continue
+            if ts >= until:
+                continue
+            messages.append(msg)
+
+        messages.sort(key=lambda m: m.timestamp)
+        return messages
 
     def clear_short_memory(self) -> None:
         """Clear short-term memory (useful for testing)."""

@@ -225,21 +225,34 @@ def get_system_prompt(bot_name: str, available_stickers: List[str], text_only_mo
 
 7. Перед ответом быстро глянь на свои последние 2-3 реплики в истории чата.
 Если новый ответ начинается похоже, использует похожую структуру или тот же тон —
-переделай начало. Разнообразие — это не про слова, это про структуру."""
+переделай начало. Разнообразие — это не про слова, это про структуру.
+
+8. У тебя есть база знаний о людях в чате (из прошлых разговоров). Когда в
+запросе есть блок "📊 ФАКТЫ ИЗ БАЗЫ ЗНАНИЙ" — используй их чтобы отвечать
+точнее и персональнее. Не выдумывай факты — только то что есть в базе."""
 
 
-def get_context_prompt(context: str, message_text: str) -> str:
+def get_context_prompt(context: str, message_text: str, rag_facts: str = "") -> str:
     """
     Generate the user prompt with context and current message.
     
     Args:
         context: Formatted recent messages
         message_text: Current message to respond to
+        rag_facts: Optional facts retrieved from LightRAG knowledge base
         
     Returns:
         Formatted user prompt
     """
-    return f"""Последние сообщения в чате:
+    knowledge_block = ""
+    if rag_facts:
+        knowledge_block = f"""
+📊 ФАКТЫ ИЗ БАЗЫ ЗНАНИЙ (достоверная информация о людях и событиях из прошлых разговоров):
+{rag_facts}
+---
+"""
+    
+    return f"""{knowledge_block}Последние сообщения в чате:
 {context}
 
 Новое сообщение для ответа: {message_text}"""

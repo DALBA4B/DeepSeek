@@ -162,7 +162,23 @@ def load_config() -> BotConfig:
         nightly_analysis_hour=_get_optional_int("NIGHTLY_ANALYSIS_HOUR", 3),
         nightly_analysis_minute=_get_optional_int("NIGHTLY_ANALYSIS_MINUTE", 0),
         timezone=os.getenv("TIMEZONE", "Europe/Kiev"),
-        
+
+        # LightRAG (long-term knowledge base — separate service over HTTP)
+        lightrag_enabled=os.getenv("LIGHTRAG_ENABLED", "true").lower() in ("true", "1", "yes"),
+        lightrag_api_url=os.getenv("LIGHTRAG_API_URL", ""),
+        lightrag_api_user=os.getenv("LIGHTRAG_API_USER", ""),
+        lightrag_api_password=os.getenv("LIGHTRAG_API_PASSWORD", ""),
+        lightrag_query_mode=os.getenv("LIGHTRAG_QUERY_MODE", "mix"),
+        lightrag_query_top_k=_get_optional_int("LIGHTRAG_QUERY_TOP_K", 5),
+        lightrag_query_timeout=_get_optional_float("LIGHTRAG_QUERY_TIMEOUT", 8.0),
+        lightrag_insert_timeout=_get_optional_float("LIGHTRAG_INSERT_TIMEOUT", 15.0),
+
+        # Nightly ingest settings
+        rag_ingest_enabled=os.getenv("RAG_INGEST_ENABLED", "true").lower() in ("true", "1", "yes"),
+        rag_ingest_every_n_days=_get_optional_int("RAG_INGEST_EVERY_N_DAYS", 1),
+        rag_ingest_timeblock_minutes=_get_optional_int("RAG_INGEST_TIMEBLOCK_MINUTES", 15),
+        rag_ingest_max_per_block=_get_optional_int("RAG_INGEST_MAX_PER_BLOCK", 30),
+
         # Logging
         log_level=os.getenv("LOG_LEVEL", "INFO"),
         log_format=os.getenv("LOG_FORMAT", "%(asctime)s - %(name)s - %(levelname)s - %(message)s")

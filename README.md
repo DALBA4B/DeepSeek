@@ -73,123 +73,76 @@ python main.py
 ├── utils.py                # Общие хелперы (timezone-aware время)
 ├── main.py                 # Точка входа, класс DeepSeekBot
 ├── memory.py               # Двухуровневая память (RAM + Firebase)
-├── brain.py                # AI логика и генерация ответов
+├── brain.py                # V2: классификация (0-3) + LightRAG + генерация
+├── conversation_analyzer.py # Fast-классификатор: grade 0-3 + needs_memory + rag_query
+├── rag_client.py           # Async-клиент LightRAG (retrieve/insert/clear/health)
+├── rag_ingestor.py         # Ночной pipeline: сбор → группировка по времени → insert
 ├── responder.py            # Отправка разных типов ответов (текст/реакция/гиф/стикер)
-├── graph_memory.py         # Граф знаний о пользователях
-├── deepseek_analyzer.py    # Ночной анализ сообщений → граф знаний
-├── night_analyzator.py     # Планировщик ночных задач
+├── night_analyzator.py     # Планировщик + RagIngestTask (ночная индексация)
+├── graph_memory.py         # ⚠️ Устаревший граф знаний (отключён, оставлен для справки)
+├── deepseek_analyzer.py    # ⚠️ Устаревший ночной анализатор (отключён, оставлен для справки)
 ├── requirements.txt        # Зависимости Python
 ├── railway.json            # Конфиг деплоя на Railway
 ├── render.yaml             # Конфиг деплоя на Render
 └── README.md               # Этот файл
 ```
 
-## Архитектура
+## Архитектура (Фаза B — LightRAG)
 
-### Диаграмма компонентов
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      DeepSeekBot                            │
-│  ┌─────────┐  ┌─────────┐  ┌───────────┐  ┌───────────┐    │
-│  │ Config  │  │ Memory  │  │   Brain   │  │ Responder │    │
-│  │(BotConf)│  │         │  │           │  │           │    │
-│  └────┬────┘  └────┬────┘  └─────┬─────┘  └─────┬─────┘    │
-│       │            │             │               │          │
-└───────┼────────────┼─────────────┼───────────────┼──────────┘
-        │            │             │               │
-        ▼            ▼             ▼               ▼
-   ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────────────┐
-   │  .env   │  │Firebase │  │DeepSeek │  │ Telegram/Giphy  │
-   │  file   │  │Firestore│  │   API   │  │      APIs       │
-   └─────────┘  └─────────┘  └─────────┘  └─────────────────┘
-```
-
-### Поток обработки сообщений
+### Поток обработки сообщения (V2)
 
 ```
 Telegram Message
     ↓
 DeepSeekBot.handle_message()
     ├── Фильтрация (боты, chat_id)
+    ├── memory.add_message()  ← сохраняем (вкл. reply_to_message)
     ↓
-Memory.add_message() → Firebase
+[Шаг 1] Brain.analyze_and_respond()
+    ├── ConversationAnalyzer.classify()   ← 1 вызов fast DeepSeek
+    │     → { grade: 0-3, needs_memory, rag_query }
+    ├── grade == 0?  → молчим
+    ├── needs_memory? → RagClient.retrieve(rag_query)  ← LightRAG (только факты)
+    └── generate_response()                ← main DeepSeek (grade → формат/токены)
     ↓
-Brain.should_respond()
-    ├── Упоминание имени? → True
-    ├── Вопросительный знак? → True
-    ├── Случайный шанс 10%? → True
-    └── Иначе → False
-    ↓
-Brain.generate_response() → DeepSeek API
-    ↓
-ResponseParser.parse()
-    ├── TEXT → _send_text()
-    ├── REACT:emoji → _send_reaction()
-    ├── GIPHY:query → _send_gif() → Giphy API
-    └── STICKER:emotion → _send_sticker()
+Responder.send_response()
+    └── ResponseParser → TEXT / REACT / GIPHY / STICKER
     ↓
 Telegram Response
 ```
 
-### Модели данных
+### Градация ответов (grade 0-3)
 
-```python
-# models.py
-@dataclass
-class ChatMessage:
-    user_id: int
-    username: str
-    text: str
-    message_id: int
-    timestamp: datetime
+| grade | Что делает бот |
+|-------|----------------|
+| 0 | Молчит (флуд, не к нему, неинтересно) |
+| 1 | Короткая реакция (стикер/гифка/смайл/1-3 слова) |
+| 2 | Обычный содержательный ответ |
+| 3 | Развёрнутый ответ с упором на факты из LightRAG |
 
-@dataclass
-class BotConfig:
-    telegram_token: str
-    deepseek_api_key: str
-    # ... все настройки с типами
+### Ночной pipeline (LightRAG)
+
+```
+Планировщик (run_hour из .env)
+    ↓
+RagIngestTask.run()
+    └── RagIngestor.ingest()
+          ├── Сбор сообщений (Firebase → fallback daily_log)
+          ├── Группировка по времени (блоки 10-15 мин, reply_to вшит в блок)
+          └── rag_client.insert(block) по одному → LightRAG делает extraction + embeddings
+    ↓
+Отчёт в чат + обновление курсора (идемпотентность)
 ```
 
-## Компоненты
+### Команды
 
-### `config.py`
-- Загружает переменные из `.env` с валидацией
-- Возвращает типизированный `BotConfig` dataclass
-- Поддерживает обратную совместимость (`config.TELEGRAM_TOKEN`)
-
-### `models.py`
-- `ChatMessage` — сообщение в чате
-- `BotConfig` — конфигурация бота
-- `ParsedResponse` — распарсенный ответ DeepSeek
-- `ResponseType` — enum типов ответов
-
-### `prompts.py`
-- Системный промпт для DeepSeek (легко редактировать)
-- Вариации имени бота для детекции упоминаний
-- Fallback ответы для ошибок
-
-### `memory.py`
-- `Memory` — основной класс памяти
-- `MemoryStorage` — абстрактный интерфейс хранилища
-- `FirebaseStorage` — реализация для Firebase
-- Поддержка dependency injection для тестирования
-
-### `brain.py`
-- `Brain` — AI логика бота
-- `should_respond()` — решение отвечать или нет
-- `generate_response()` — генерация через DeepSeek API
-
-### `responder.py`
-- `Responder` — отправка ответов
-- `ResponseParser` — парсинг формата ответа
-- `GiphyClient` — async клиент для Giphy API
-- `StickerManager` — управление стикерами
-
-### `main.py`
-- `DeepSeekBot` — главный класс бота
-- Dependency injection для всех компонентов
-- Graceful shutdown по сигналам
+| Команда | Действие |
+|---------|----------|
+| `/daily_log` | Сообщения за сегодня (для отладки) |
+| `/ragstats` | Статус LightRAG + последняя индексация |
+| `/ragnow` | Вручную запустить индексацию за 24ч |
+| `/profile <имя>` | Что бот знает о человеке (из LightRAG) |
+| `/ragclean confirm` | ⚠️ Полностью очистить базу знаний |
 
 ## Безопасность
 

@@ -1,13 +1,19 @@
 # main.py
 """
 Main entry point for the DeepSeek Telegram bot.
-Initializes all components including knowledge graphs and scheduler.
+
+Phase B (LightRAG): the answer pipeline now goes through
+Brain.analyze_and_respond() (classify grade 0-3 → fetch LightRAG facts →
+generate), and a nightly RagIngestTask feeds the day's chat into LightRAG.
+
+The legacy knowledge-graph pipeline (graph_memory.py + deepseek_analyzer.py)
+is kept on disk for reference but is no longer wired in here.
 """
 
 import logging
 import signal
 import sys
-from typing import Optional
+from typing import List, Optional
 
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
@@ -17,8 +23,9 @@ from models import BotConfig
 from memory import Memory, RecentResponseTracker
 from brain import Brain
 from responder import Responder, ResponseParser
-from graph_memory import KnowledgeGraphManager
-from night_analyzator import TaskScheduler, NightlyAnalysisTask
+from rag_client import RagClient
+from rag_ingestor import RagIngestor
+from night_analyzator import TaskScheduler, RagIngestTask
 
 logger = logging.getLogger(__name__)
 
@@ -27,144 +34,139 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram.ext._application").setLevel(logging.WARNING)
 
 
+def build_rag_client(config: BotConfig) -> Optional[RagClient]:
+    """
+    Construct a RagClient from config, or return None when LightRAG is off /
+    not configured. Returning None is intentional: Brain and the ingestor both
+    tolerate a missing client and degrade to "answer without long-term memory".
+    """
+    if not config.lightrag_enabled:
+        logger.info("LightRAG disabled by config (LIGHTRAG_ENABLED=false)")
+        return None
+    if not config.lightrag_api_url:
+        logger.warning("LightRAG enabled but LIGHTRAG_API_URL is empty — running without long-term memory")
+        return None
+    return RagClient(
+        base_url=config.lightrag_api_url,
+        username=config.lightrag_api_user,
+        password=config.lightrag_api_password,
+        query_mode=config.lightrag_query_mode,
+        query_top_k=config.lightrag_query_top_k,
+        query_timeout=config.lightrag_query_timeout,
+        insert_timeout=config.lightrag_insert_timeout,
+    )
+
+
 class DeepSeekBot:
     """
     Main bot class that orchestrates all components.
     Uses dependency injection for testability.
     """
-    
+
     def __init__(
         self,
         config: BotConfig,
         memory: Optional[Memory] = None,
         brain: Optional[Brain] = None,
         responder: Optional[Responder] = None,
-        knowledge_manager: Optional[KnowledgeGraphManager] = None,
-        scheduler: Optional[TaskScheduler] = None
+        rag_client: Optional[RagClient] = None,
+        scheduler: Optional[TaskScheduler] = None,
     ):
         """
         Initialize bot with configuration and optional dependencies.
-        
+
         Args:
             config: Bot configuration
             memory: Optional Memory instance
             brain: Optional Brain instance
             responder: Optional Responder instance
-            knowledge_manager: Optional KnowledgeGraphManager instance
+            rag_client: Optional RagClient instance (long-term knowledge base)
             scheduler: Optional TaskScheduler instance
         """
         self.config = config
-        
-        # Initialize memory first (needed for knowledge manager)
+
+        # Memory first (needed by RAG ingestor)
         self.memory = memory or Memory(config)
-        
-        # Initialize knowledge graph manager
-        firebase_db = self.memory.storage.get_client() if self.memory.storage else None
-        self.knowledge_manager = knowledge_manager or KnowledgeGraphManager(firebase_db)
-        
-        # Initialize brain with knowledge manager
+
+        # LightRAG client (may be None if disabled/unconfigured)
+        self.rag_client = rag_client or build_rag_client(config)
+
+        # Brain — V2 pipeline (classify → RAG facts → generate).
+        # rag_client is optional; Brain handles None gracefully.
         self.brain = brain or Brain(
-            config, 
+            config,
             available_stickers=["happy", "sad", "laugh", "cool", "think", "wtf"],
-            knowledge_manager=self.knowledge_manager
+            rag_client=self.rag_client,
         )
-        
-        # Initialize responder
+
+        # Responder (unchanged — parses TEXT/GIPHY/REACT/STICKER)
         self.responder = responder or Responder(config)
-        
-        # Initialize scheduler
-        self.scheduler = scheduler or TaskScheduler(timezone="Europe/Kiev")
-        
-        # Initialize DeepSeek analyzer (will be set in _setup_nightly_analysis if available)
-        self.deepseek_analyzer = None
 
-        # Initialize nightly task (will be set in _setup_nightly_analysis if available)
-        self.nightly_task = None
+        # Scheduler uses the configured timezone (fixes bug #2: run hour was
+        # hard-coded; the hour/minute now come from config too).
+        self.scheduler = scheduler or TaskScheduler(timezone=config.timezone)
 
-        # Setup nightly analysis if DeepSeek API key is available
-        self._setup_nightly_analysis()
-        
+        # Nightly RAG ingest (replaces the old knowledge-graph nightly run)
+        self.rag_ingestor: Optional[RagIngestor] = None
+        self.rag_task: Optional[RagIngestTask] = None
+        self._setup_rag_ingest()
+
         self._app: Optional[Application] = None
         self._running = False
-        
-        # Initialize response tracker for anti-repeat functionality
+
+        # Track recent responses to discourage repetition
         self._response_tracker = RecentResponseTracker(max_items=10)
-        
-        logger.info("DeepSeekBot initialized with all components")
 
-    def _setup_nightly_analysis(self) -> None:
-        """Setup nightly DeepSeek analysis task if API key is available."""
-        deepseek_api_key = self.config.deepseek_api_key
-        
-        if not deepseek_api_key:
-            logger.info("DeepSeek API key not configured, nightly analysis disabled")
+        logger.info("DeepSeekBot initialized (Phase B: LightRAG pipeline)")
+
+    def _setup_rag_ingest(self) -> None:
+        """Wire up the nightly RAG ingest task if LightRAG is configured."""
+        if not self.config.rag_ingest_enabled:
+            logger.info("RAG nightly ingest disabled by config (RAG_INGEST_ENABLED=false)")
             return
-        
-        try:
-            from deepseek_analyzer import DeepSeekAnalyzer, DailyMessageCollector
-            
-            firebase_db = self.memory.storage.get_client() if self.memory.storage else None
-            
-            # Check if any data source is available
-            if not firebase_db:
-                logger.info("Firebase not available, using RAM memory for nightly analysis")
-            
-            analyzer = DeepSeekAnalyzer(deepseek_api_key, self.knowledge_manager)
-            
-            # Save analyzer for /analyze command
-            self.deepseek_analyzer = analyzer
-            
-            # Pass memory to collector for fallback/primary source
-            collector = DailyMessageCollector(firebase_db, memory=self.memory, timezone=self.config.timezone)
-            
-            # Pass memory to task for nightly cleanup
-            nightly_task = NightlyAnalysisTask(
-                deepseek_analyzer=analyzer,
-                message_collector=collector,
-                memory=self.memory,
-                knowledge_manager=self.knowledge_manager,
-                run_hour=3,
-                run_minute=0,
-                timezone=self.config.timezone
-            )
-            nightly_task.register(self.scheduler)
+        if self.rag_client is None:
+            logger.info("RAG nightly ingest skipped: no RagClient configured")
+            return
 
-            # Save nightly task for later bot configuration
-            self.nightly_task = nightly_task
+        firebase_db = self.memory.storage.get_client() if self.memory.storage else None
+        self.rag_ingestor = RagIngestor(
+            rag_client=self.rag_client,
+            memory=self.memory,
+            firebase_db=firebase_db,
+            config=self.config,
+        )
+        self.rag_task = RagIngestTask(
+            ingestor=self.rag_ingestor,
+            run_hour=self.config.nightly_analysis_hour,
+            run_minute=self.config.nightly_analysis_minute,
+            timezone=self.config.timezone,
+            every_n_days=self.config.rag_ingest_every_n_days,
+        )
+        self.rag_task.register(self.scheduler)
+        logger.info(
+            "RAG ingest task registered for %02d:%02d (every %d day(s))",
+            self.config.nightly_analysis_hour,
+            self.config.nightly_analysis_minute,
+            self.config.rag_ingest_every_n_days,
+        )
 
-            logger.info("Nightly analysis task configured for 3:00 AM")
-            
-        except ImportError as e:
-            logger.warning(f"Could not setup nightly analysis: {e}")
-        except Exception as e:
-            logger.error(f"Error setting up nightly analysis: {e}")
-
+    # ------------------------------------------------------------------ #
+    # Message handling (V2 pipeline)
+    # ------------------------------------------------------------------ #
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """
-        Handle incoming messages from the group chat.
-        """
+        """Handle an incoming group-chat message through the V2 pipeline."""
         message = update.message
-        
-        # Check if message exists
         if not message:
             return
 
-        # Log message received
-        logger.info(f"=== MESSAGE RECEIVED ===")
-        logger.info(f"has text: {bool(message.text)}, text: {message.text[:30] if message.text else 'None'}")
-        logger.info(f"======================")
-
-        # Ignore messages from the bot itself
+        # Ignore messages from the bot itself and from other bots
         if message.from_user.id == context.bot.id:
-            logger.debug("Ignoring message from bot itself")
             return
-
-        # Ignore messages from other bots
         if message.from_user.is_bot:
             logger.debug(f"Ignoring message from another bot: {message.from_user.username}")
             return
 
-        # Check chat_id filter if configured
+        # Chat filter
         if self.config.chat_id and message.chat_id != self.config.chat_id:
             logger.debug(f"Ignoring message from chat {message.chat_id} (not in allowed chat)")
             return
@@ -175,234 +177,244 @@ class DeepSeekBot:
         message_id = message.message_id
 
         try:
-            # Process text messages only
             if not text:
                 logger.debug("Message has no text, ignoring")
                 return
 
-            logger.info(f"Received text message from {username} (ID: {user_id}): {text[:50]}")
+            logger.info(f"Received message from {username} (ID: {user_id}): {text[:50]}")
 
-            # Save message to memory
-            self.memory.add_message(user_id, username, text, message_id)
+            # Extract reply context (if this message is a reply to another)
+            reply_text = ""
+            if message.reply_to_message and message.reply_to_message.text:
+                reply_text = message.reply_to_message.text
 
-            # Check if bot should respond (with conversation continuation support)
+            # Save to memory (short-term + daily_log + Firebase), with reply context
+            self.memory.add_message(
+                user_id, username, text, message_id, reply_to_text=reply_text or None
+            )
+
             bot_was_recent = self.memory.bot_responded_recently(within_last_n=3)
-            
-            # Use smart AI-based decision or simple heuristics
-            if self.config.use_smart_respond:
-                context_str = self.memory.get_context()
-                should_respond = self.brain.smart_should_respond(
-                    text, context_str, bot_responded_recently=bot_was_recent
-                )
-            else:
-                should_respond = self.brain.should_respond(
-                    text, bot_responded_recently=bot_was_recent
-                )
-            
-            if not should_respond:
-                logger.debug("Bot decided not to respond to this message")
-                return
 
-            logger.info(f"Bot will respond to: {text[:50]}")
-            
-            # Show "typing" status in Telegram
+            # Show "typing" while we classify + (maybe) fetch facts + generate
             await context.bot.send_chat_action(chat_id=message.chat_id, action="typing")
 
-            # Get context for DeepSeek
-            context_str = self.memory.get_context()
-
-            # Generate response with personalized context and avoid list
-            response = self.brain.generate_response(
-                text, 
-                context_str,
-                user_id=user_id,
-                username=username,
-                avoid_responses=self._response_tracker.get_avoid_list()
+            # V2: single call decides grade 0-3, whether memory is needed, and
+            # generates the answer. Returns None when grade == 0 (stay silent).
+            recent_lines: List[str] = self.memory.get_recent_context_lines()
+            response = await self.brain.analyze_and_respond(
+                message_text=text,
+                author=username,
+                recent_messages=recent_lines,
+                reply_text=reply_text or None,
+                bot_responded_recently=bot_was_recent,
+                avoid_responses=self._response_tracker.get_avoid_list(),
             )
+
+            if response is None:
+                logger.debug("Bot decided to stay silent (grade 0)")
+                return
+
             logger.info(f"Generated response: {response[:50]}")
 
-            # Send response
+            # Send whatever the brain produced (text / GIPHY: / REACT: / STICKER:)
             success = await self.responder.send_response(message, response, context.bot)
-            
-            # Save bot's response to short-term memory (so bot can see what it said)
+
             if success:
-                # Parse response to get actual content (without REACT:, GIPHY:, etc.)
                 parsed = ResponseParser.parse(response, text_only_mode=self.config.text_only_mode)
-                self.memory.add_bot_response(
-                    text=parsed.content,
-                    message_id=0  # Bot responses don't have message IDs in memory
-                )
-                
-                # Track response for anti-repeat
+                self.memory.add_bot_response(text=parsed.content, message_id=0)
                 self._response_tracker.add_response(parsed.response_type.value, parsed.content)
-                
-                logger.debug("Bot response saved to short-term memory")
 
         except Exception as e:
             logger.error(f"Error handling message: {e}", exc_info=True)
 
+    # ------------------------------------------------------------------ #
+    # Commands: /daily_log
+    # ------------------------------------------------------------------ #
     async def _cmd_daily_log(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """
-        Handle /daily_log command to show all messages from today.
-        Useful for debugging and verifying daily memory works.
-        """
+        """Handle /daily_log: show today's messages grouped by user (debug aid)."""
         if not update.effective_chat or not update.message:
             return
-        
+
         chat_id = update.effective_chat.id
-        
+
         try:
             daily_messages = self.memory.get_daily_log()
-            
+
             if not daily_messages:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text="📋 Daily log is empty"
-                )
+                await context.bot.send_message(chat_id=chat_id, text="📋 Daily log пуст")
                 return
-            
-            # Group by user
+
             users_data = {}
             for msg in daily_messages:
                 if msg.user_id not in users_data:
                     users_data[msg.user_id] = {"username": msg.username, "count": 0, "messages": []}
                 users_data[msg.user_id]["count"] += 1
-                users_data[msg.user_id]["messages"].append(f"[{msg.timestamp.strftime('%H:%M')}] {msg.text[:50]}")
-            
-            # Format output
-            lines = [f"📋 Daily Log ({len(daily_messages)} messages total)\n"]
-            
+                users_data[msg.user_id]["messages"].append(
+                    f"[{msg.timestamp.strftime('%H:%M')}] {msg.text[:50]}"
+                )
+
+            lines = [f"📋 Daily Log ({len(daily_messages)} сообщений)\n"]
             for uid, data in users_data.items():
                 user_type = "🤖 Bot" if uid == -1 else f"👤 {data['username']}"
-                lines.append(f"\n{user_type}: {data['count']} messages")
-                for msg in data['messages'][:3]:  # Show first 3 messages
-                    lines.append(f"  • {msg}")
-                if len(data['messages']) > 3:
-                    lines.append(f"  ... and {len(data['messages']) - 3} more")
-            
-            text = "\n".join(lines)
-            await context.bot.send_message(chat_id=chat_id, text=text)
-            
+                lines.append(f"\n{user_type}: {data['count']} сообщений")
+                for m in data["messages"][:3]:
+                    lines.append(f"  • {m}")
+                if len(data["messages"]) > 3:
+                    lines.append(f"  ... и ещё {len(data['messages']) - 3}")
+
+            await context.bot.send_message(chat_id=chat_id, text="\n".join(lines))
+
         except Exception as e:
             logger.error(f"Error in daily_log command: {e}", exc_info=True)
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=f"❌ Error: {str(e)[:100]}"
-            )
+            await context.bot.send_message(chat_id=chat_id, text=f"❌ Error: {str(e)[:100]}")
 
-    async def _cmd_analyze(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """
-        Handle /analyze command to manually trigger DeepSeek analysis.
-        Shows detailed analysis results for all users in daily log.
-        """
-        if not update.effective_chat or not update.message:
+    # ------------------------------------------------------------------ #
+    # Commands: RAG (Phase B)
+    # ------------------------------------------------------------------ #
+    async def _cmd_ragstats(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /ragstats: LightRAG connectivity + last ingest summary."""
+        if not update.effective_chat:
             return
-        
         chat_id = update.effective_chat.id
-        
+
+        if self.rag_client is None:
+            await context.bot.send_message(
+                chat_id=chat_id, text="ℹ️ LightRAG не настроен (LIGHTRAG_ENABLED=false или нет URL)"
+            )
+            return
+
+        ok = await self.rag_client.health()
+        status = "🟢 онлайн" if ok else "🔴 недоступен"
+
+        stats_line = ""
+        if self.rag_ingestor is not None:
+            stats = self.rag_ingestor.get_last_stats()
+            last_ts = self.rag_ingestor.get_last_ingest_timestamp()
+            if stats and last_ts:
+                stats_line = (
+                    f"\n\n🕒 Последняя индексация: {last_ts.strftime('%Y-%m-%d %H:%M')}"
+                    f"\n📝 Сообщений: {stats.get('messages', 0)}"
+                    f"\n📦 Блоков: {stats.get('blocks', 0)}"
+                    f"\n⬆️ Добавлено: {stats.get('inserted', 0)}"
+                )
+            else:
+                stats_line = "\n\n🕒 Индексаций ещё не было"
+
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"📊 LightRAG: {status}\n🔗 URL: {self.config.lightrag_api_url}{stats_line}",
+        )
+
+    async def _cmd_ragnow(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /ragnow: manually trigger a RAG ingest for the last 24h."""
+        if not update.effective_chat:
+            return
+        chat_id = update.effective_chat.id
+
+        if self.rag_ingestor is None:
+            await context.bot.send_message(chat_id=chat_id, text="ℹ️ RAG-индексация не настроена")
+            return
+
+        await context.bot.send_message(chat_id=chat_id, text="⏳ Запускаю индексацию последних 24ч...")
+
         try:
-            # Get daily messages from memory
-            daily_messages = self.memory.get_daily_log()
-            
-            if not daily_messages:
-                logger.info("No messages to analyze")
-                return
-            
+            stats = await self.rag_ingestor.ingest()
+        except Exception as e:
+            logger.error(f"Manual RAG ingest failed: {e}", exc_info=True)
+            await context.bot.send_message(chat_id=chat_id, text=f"❌ Ошибка: {str(e)[:100]}")
+            return
+
+        if stats.get("skipped") == "no_messages":
+            await context.bot.send_message(chat_id=chat_id, text="📭 Нет новых сообщений для индексации")
+            return
+
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                f"✅ Готово!\n"
+                f"📝 Сообщений: {stats.get('messages', 0)}\n"
+                f"📦 Блоков: {stats.get('blocks', 0)}\n"
+                f"⬆️ Добавлено: {stats.get('inserted', 0)}"
+            ),
+        )
+
+    async def _cmd_profile(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """
+        Handle /profile <имя>: ask LightRAG for facts about a person and show
+        a compact summary. Useful for debugging what the bot "remembers".
+        """
+        if not update.effective_chat:
+            return
+        chat_id = update.effective_chat.id
+
+        if self.rag_client is None:
+            await context.bot.send_message(chat_id=chat_id, text="ℹ️ LightRAG не настроен")
+            return
+
+        # Parse target name from command args or from a replied-to message
+        args = context.args
+        target = " ".join(args).strip() if args else ""
+        if not target and update.message and update.message.reply_to_message:
+            ru = update.message.reply_to_message.from_user
+            target = ru.first_name or ru.username or ""
+        if not target:
+            await context.bot.send_message(
+                chat_id=chat_id, text="Использование: /profile <имя> (или ответь на сообщение человека)"
+            )
+            return
+
+        await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+
+        facts = await self.rag_client.retrieve(f"факты, интересы и привычки человека по имени {target}")
+        if not facts:
+            await context.bot.send_message(
+                chat_id=chat_id, text=f"🤷 Ничего не знаю про «{target}». Возможно, ещё не проиндексировано."
+            )
+            return
+
+        # LightRAG returns a context blob; cap it to keep the message readable.
+        summary = facts.strip()
+        if len(summary) > 1500:
+            summary = summary[:1497] + "..."
+
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"📊 Что я знаю про {target}:\n\n{summary}",
+        )
+
+    async def _cmd_ragclean(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """
+        Handle /ragclean: WIPE all LightRAG storage. Dangerous — requires a
+        second confirmation argument ("confirm") so it can't go off by accident.
+        """
+        if not update.effective_chat:
+            return
+        chat_id = update.effective_chat.id
+
+        if self.rag_client is None:
+            await context.bot.send_message(chat_id=chat_id, text="ℹ️ LightRAG не настроен")
+            return
+
+        confirmed = context.args and context.args[0].lower() == "confirm"
+        if not confirmed:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text=f"🔄 Analyzing {len(daily_messages)} messages from today...\n⏳ This may take a moment..."
+                text=(
+                    "⚠️ Это УДАЛИТ ВСЮ базу знаний LightRAG (граф + векторы + raw text).\n"
+                    "Для подтверждения отправь: /ragclean confirm"
+                ),
             )
-            
-            # Group messages by user (exclude bot messages - user_id == -1)
-            users_data: dict = {}
-            for msg in daily_messages:
-                # Skip bot's own messages
-                if msg.user_id == -1:
-                    continue
-                    
-                if msg.user_id not in users_data:
-                    users_data[msg.user_id] = {"username": msg.username, "messages": []}
-                users_data[msg.user_id]["messages"].append(msg)
-            
-            # Analyze each user
-            results = []
-            detailed_results = []
+            return
 
-            logger.info(f"DeepSeek analyzer available: {hasattr(self, 'deepseek_analyzer') and self.deepseek_analyzer is not None}")
-            
-            if hasattr(self, 'deepseek_analyzer') and self.deepseek_analyzer is not None:
-                analyzer = self.deepseek_analyzer
-                for uid, data in users_data.items():
-                    logger.info(f"Analyzing {len(data['messages'])} messages for {data['username']} (ID: {uid})")
-                    graph = await analyzer.analyze_user_messages(
-                        user_id=uid,
-                        username=data['username'],
-                        messages=data['messages']
-                    )
-                    if graph:
-                        # Get new facts count from graph (analyzer.new_facts is not available, so check via graph comparison)
-                        results.append(f"✅ {data['username']}: {len(data['messages'])} msgs")
-                        detailed_results.append(self._format_analysis_details(data['username'], graph, show_only_new=True))
-                    else:
-                        results.append(f"⚠️ {data['username']}: Analysis failed")
-                
-                result_text = "\n".join(results)
-                
-                # Send summary
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=f"✅ Analysis complete!\n\n{result_text}\n\n📈 Knowledge graphs updated."
-                )
-                
-                # Send detailed results for each user
-                if detailed_results:
-                    for detail_text in detailed_results:
-                        await context.bot.send_message(
-                            chat_id=chat_id,
-                            text=detail_text,
-                            parse_mode="HTML"
-                        )
-                
-                logger.info(f"Analysis complete. Results:\n{result_text}")
-            else:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text="❌ DeepSeek analyzer not available"
-                )
-        
-        except Exception as e:
-            logger.error(f"Error in analyze command: {e}", exc_info=True)
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=f"❌ Analysis error: {str(e)[:100]}"
-            )
+        ok = await self.rag_client.clear()
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="✅ База знаний очищена" if ok else "❌ Не удалось очистить базу",
+        )
 
-    def _format_analysis_details(self, username: str, graph, show_only_new: bool = False) -> str:
-        """
-        Format knowledge graph into readable message - facts organized by category.
-        
-        Args:
-            username: User's username
-            graph: UserKnowledgeGraph object
-            show_only_new: If True, show only newly discovered facts
-            
-        Returns:
-            Formatted HTML string with analysis details
-        """
-        lines = [f"<b>📊 {username}</b>"]
-        
-        # Display facts organized by category
-        if graph.facts:
-            for category, facts_list in graph.facts.items():
-                if facts_list:
-                    facts_str = ", ".join(facts_list)
-                    lines.append(f"  <b>{category}:</b> {facts_str}")
-        
-        if not graph.facts:
-            lines.append("  (no facts discovered)")
-        
-        return "\n".join(lines)
-
+    # ------------------------------------------------------------------ #
+    # Lifecycle
+    # ------------------------------------------------------------------ #
     def _setup_signal_handlers(self) -> None:
         """Setup graceful shutdown handlers."""
         def signal_handler(signum, frame):
@@ -411,39 +423,27 @@ class DeepSeekBot:
             self.scheduler.stop()
             if self._app:
                 self._app.stop_running()
-        
+
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
 
     async def _startup_handler(self, app: Application) -> None:
-        """
-        Called when the Application starts up (async context with event loop).
-        Initializes scheduler and handlers here since we now have a running event loop.
-        """
+        """Called when the Application starts: start scheduler, configure bot."""
         logger.info("Startup handler called - starting scheduler...")
         await self.scheduler.start()
 
-        # Configure nightly analysis task with bot (now that we have a running app)
-        if self.nightly_task and self.config.chat_id:
-            self.nightly_task.set_bot(
-                bot=app.bot,
-                chat_id=self.config.chat_id,
-                format_func=self._format_analysis_details
-            )
-            logger.info("Nightly analysis task bot configured")
+        # Give the RAG task a bot handle so it can post ingest reports
+        if self.rag_task and self.config.chat_id:
+            self.rag_task.set_bot(bot=app.bot, chat_id=self.config.chat_id)
+            logger.info("RAG ingest task bot configured")
 
-        # Load sticker pack
+        # Load sticker pack (still used by the responder)
         try:
             sticker_pack_name = "userpack7845974bystickrubot"
             logger.info(f"Loading sticker pack '{sticker_pack_name}'...")
-
-            # Access sticker manager from responder
             if hasattr(self.responder, 'sticker_manager'):
                 await self.responder.sticker_manager.load_sticker_set(app.bot, sticker_pack_name)
                 logger.info("Sticker pack loaded successfully")
-            else:
-                logger.warning("Responder does not have sticker_manager attribute")
-
         except Exception as e:
             logger.error(f"Failed to load sticker pack: {e}")
 
@@ -459,46 +459,36 @@ class DeepSeekBot:
         logger.info("Bot shutdown complete")
 
     def run(self) -> None:
-        """
-        Initialize and start the bot.
-        Blocks until the bot is stopped.
-        """
+        """Initialize and start the bot. Blocks until the bot is stopped."""
         try:
             logger.info("=" * 50)
             logger.info("Starting DeepSeek Telegram Bot")
             logger.info(f"Bot name: {self.config.bot_name}")
             logger.info(f"Chat filter: {self.config.chat_id or 'All chats'}")
+            logger.info(f"LightRAG: {'on' if self.rag_client else 'off'}")
             logger.info("=" * 50)
 
-            # Setup signal handlers for graceful shutdown
             self._setup_signal_handlers()
 
-            # Create application
             logger.info("Creating Telegram Application...")
             self._app = Application.builder().token(self.config.telegram_token).build()
 
-            # Add message handler for text messages only
-            message_handler = MessageHandler(
-                filters.TEXT & ~filters.COMMAND,
-                self.handle_message
+            # Text messages (exclude commands)
+            self._app.add_handler(
+                MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)
             )
-            self._app.add_handler(message_handler)
-            
-            # Add /analyze command handler
-            analyze_handler = CommandHandler("analyze", self._cmd_analyze)
-            self._app.add_handler(analyze_handler)
-            
-            # Add /daily_log command handler
-            daily_log_handler = CommandHandler("daily_log", self._cmd_daily_log)
-            self._app.add_handler(daily_log_handler)
 
-            # Register startup and shutdown handlers
+            # Commands
+            self._app.add_handler(CommandHandler("daily_log", self._cmd_daily_log))
+            self._app.add_handler(CommandHandler("ragstats", self._cmd_ragstats))
+            self._app.add_handler(CommandHandler("ragnow", self._cmd_ragnow))
+            self._app.add_handler(CommandHandler("profile", self._cmd_profile))
+            self._app.add_handler(CommandHandler("ragclean", self._cmd_ragclean))
+
             self._app.post_init = self._startup_handler
             self._app.post_shutdown = self._shutdown_handler
 
             logger.info("Starting polling...")
-            
-            # Start polling (this runs the event loop)
             self._app.run_polling(allowed_updates=Update.ALL_TYPES)
 
         except KeyboardInterrupt:
@@ -509,12 +499,7 @@ class DeepSeekBot:
 
 
 def setup_logging(config: BotConfig) -> None:
-    """
-    Configure logging based on config settings.
-    
-    Args:
-        config: Bot configuration
-    """
+    """Configure logging based on config settings."""
     logging.basicConfig(
         format=config.log_format,
         level=getattr(logging, config.log_level.upper(), logging.INFO)
@@ -522,21 +507,13 @@ def setup_logging(config: BotConfig) -> None:
 
 
 def main() -> None:
-    """
-    Main entry point.
-    Loads configuration and starts the bot.
-    """
+    """Main entry point: load configuration and start the bot."""
     try:
-        # Load configuration
         config = get_config()
-        
-        # Setup logging
         setup_logging(config)
-        
-        # Create and run bot
         bot = DeepSeekBot(config)
         bot.run()
-        
+
     except ConfigError as e:
         print(f"Configuration error: {e}", file=sys.stderr)
         sys.exit(1)

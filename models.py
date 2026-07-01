@@ -80,30 +80,35 @@ class TokenRange:
 class ChatMessage:
     """
     Represents a message in the chat.
-    
+
     Attributes:
         user_id: Telegram user ID
         username: Display name of the user
         text: Message content
         message_id: Telegram message ID
         timestamp: When the message was received
+        reply_to_text: If this is a reply, the text of the message being replied to
     """
     user_id: int
     username: str
     text: str
     message_id: int
     timestamp: datetime = field(default_factory=lambda: get_now("UTC"))
+    reply_to_text: Optional[str] = None
 
     def to_dict(self) -> dict:
         """Convert to dictionary for Firebase storage."""
-        return {
+        data = {
             "user_id": self.user_id,
             "username": self.username,
             "text": self.text,
             "message_id": self.message_id,
             "timestamp": self.timestamp,
-            "date": self.timestamp.date().isoformat()  # Add date field for Firebase queries
+            "date": self.timestamp.date().isoformat()  # date field for Firebase queries
         }
+        if self.reply_to_text:
+            data["reply_to_text"] = self.reply_to_text
+        return data
 
     @classmethod
     def from_dict(cls, data: dict) -> "ChatMessage":
@@ -138,10 +143,22 @@ class ChatMessage:
             text=data.get("text", ""),
             message_id=data.get("message_id", 0),
             timestamp=ts,
+            reply_to_text=data.get("reply_to_text"),
         )
 
     def to_context_line(self) -> str:
-        """Format message for context string."""
+        """
+        Format message for context string.
+
+        Inline the reply context so both the classifier and the response
+        generator see what a message is reacting to — this is what lets the
+        bot treat "согласен" + reply to "я люблю киев" as one coherent unit.
+        """
+        if self.reply_to_text:
+            quote = self.reply_to_text.strip().replace("\n", " ")
+            if len(quote) > 80:
+                quote = quote[:77] + "..."
+            return f"{self.username} (reply на «{quote}»): {self.text}"
         return f"{self.username}: {self.text}"
 
 
@@ -201,7 +218,25 @@ class BotConfig:
     nightly_analysis_hour: int = 3
     nightly_analysis_minute: int = 0
     timezone: str = "Europe/Kiev"
-    
+
+    # LightRAG (long-term knowledge base about people / facts in the chat)
+    # LightRAG is deployed as a separate service; the bot only talks to it
+    # over HTTP. LLM + embedding models are configured ON the LightRAG side.
+    lightrag_enabled: bool = True
+    lightrag_api_url: str = ""          # e.g. https://xxx.up.railway.app
+    lightrag_api_user: str = ""         # AUTH_ACCOUNTS user
+    lightrag_api_password: str = ""     # AUTH_ACCOUNTS password
+    lightrag_query_mode: str = "mix"    # mix / hybrid / local / global / naive
+    lightrag_query_top_k: int = 5
+    lightrag_query_timeout: float = 8.0
+    lightrag_insert_timeout: float = 15.0
+
+    # Nightly ingest: how often and how the chat is grouped before insert
+    rag_ingest_enabled: bool = True
+    rag_ingest_every_n_days: int = 1     # 1 = every night, 3-7 = less often
+    rag_ingest_timeblock_minutes: int = 15  # group messages into N-min blocks
+    rag_ingest_max_per_block: int = 30   # hard cap on messages per block
+
     # Logging
     log_level: str = "INFO"
     log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
