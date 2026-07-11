@@ -22,6 +22,8 @@ from prompts import (
     get_name_variations,
     CONTINUATION_TRIGGERS,
     FALLBACK_RESPONSES,
+    GIF_REQUEST_KEYWORDS,
+    STICKER_REQUEST_KEYWORDS,
 )
 from rag_client import RagClient, RagClientError
 from conversation_analyzer import ConversationAnalyzer, ClassificationResult, _MessageContext
@@ -102,6 +104,51 @@ class RagUsageStats:
             "facts_retrieved": self.facts_retrieved,
             "hit_rate_pct": hit_rate,
         }
+
+
+def _detect_media_request(message_text: str) -> Optional[str]:
+    """
+    Keyword-based check: did the user explicitly ask for a GIF or sticker?
+    Used to force compliance (see _build_media_hint) instead of hoping the
+    model's own judgement lines up with what was actually asked for.
+    """
+    text_lower = message_text.lower()
+    if any(kw in text_lower for kw in GIF_REQUEST_KEYWORDS):
+        return "gif"
+    if any(kw in text_lower for kw in STICKER_REQUEST_KEYWORDS):
+        return "sticker"
+    return None
+
+
+_RANDOM_MEDIA_HINTS = (
+    "можно один раз ответить гифкой (GIPHY:<запрос>), если это в тему",
+    "можно один раз ответить стикером (STICKER:<эмоция>), если это в тему",
+    "можно один раз ответить реакцией-эмодзи (REACT:<эмодзи>), если это в тему",
+)
+
+
+def _build_media_hint(message_text: str, media_probability: float) -> str:
+    """
+    Decide, in CODE (not left to the model's own judgement), whether this
+    turn is allowed to use GIPHY:/REACT:/STICKER: instead of plain text.
+
+    This is the fix for "гифка/стикер вместо ответа, когда не просили, и
+    текст, когда просили" (Проблема №2): an explicit request from the user
+    always wins and is force-instructed; otherwise there's only a small
+    `media_probability` chance of an unprompted media reply. Returns "" when
+    neither applies — the base prompt already tells the model "no format
+    line this turn = plain text", so an empty hint means text.
+    """
+    explicit = _detect_media_request(message_text)
+    if explicit == "gif":
+        return "пользователь явно просит гифку — ответь строго GIPHY:<короткий запрос на английском>, без текста до/после"
+    if explicit == "sticker":
+        return "пользователь явно просит стикер — ответь строго STICKER:<эмоция>, без текста до/после"
+
+    if random.random() < media_probability:
+        return random.choice(_RANDOM_MEDIA_HINTS)
+
+    return ""
 
 
 class RequestClassifier:
@@ -381,12 +428,23 @@ class Brain:
                     f"НЕ ИСПОЛЬЗУЙ ЭТИ ОТВЕТЫ: {avoid_str}\n\n{enhanced_context}"
                 )
 
+            # Code-enforced format control (Проблема №2 fix): the model does
+            # NOT get to freely pick GIPHY/REACT/STICKER anymore — either the
+            # user explicitly asked for one, or a small random roll allows
+            # it this turn. text_only_mode skips this entirely (would be
+            # stripped by ResponseParser anyway).
+            media_hint = ""
+            if not self.config.text_only_mode:
+                media_hint = _build_media_hint(
+                    message_text, self.config.media_response_probability
+                )
+
             messages = [
                 {"role": "system", "content": system_prompt},
                 {
                     "role": "user",
                     "content": get_context_prompt(
-                        enhanced_context, message_text, rag_facts
+                        enhanced_context, message_text, rag_facts, media_hint
                     ),
                 },
             ]

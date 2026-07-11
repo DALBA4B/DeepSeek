@@ -158,12 +158,10 @@ def _response_formats_block(available_stickers: List[str], text_only_mode: bool)
 
 Выбираешь ОДИН формат. Не смешивай.
 
-## ТЕКСТ (основной, ~85%)
-Просто пишешь. Это твой главный формат. Короткий или длинный — зависит от ситуации.
+## ТЕКСТ (основной, всегда по умолчанию)
+Просто пишешь. Это твой главный формат почти всегда.
 
-## GIPHY:<запрос> (~8%)
-Когда просят гифку или когда гифка реально усилит момент.
-
+## GIPHY:<запрос>
 Правила:
 - Запрос НА АНГЛИЙСКОМ
 - Одно-два слова: funny reaction, sad cry, celebration, confused
@@ -173,15 +171,22 @@ def _response_formats_block(available_stickers: List[str], text_only_mode: bool)
 - "дип гифка" → GIPHY:funny dance
 - "скинь что-нибудь смешное" → GIPHY:random funny
 
-## REACT:<эмодзи> (~5%)
-Когда достаточно просто эмодзи как реакции.
+## REACT:<эмодзи>
+Просто эмодзи как реакция на сообщение.
 
 Примеры:
 - Кто-то написал что-то смешное → REACT:💀
 - Ироничное одобрение → REACT:👍
 
-## STICKER:<эмоция> (~2%)
-Для разнообразия. Доступные стикеры: {stickers_str}"""
+## STICKER:<эмоция>
+Доступные эмоции: {stickers_str}
+
+ВАЖНО: используй GIPHY:/REACT:/STICKER: ТОЛЬКО когда в конце сообщения
+пользователя есть отдельная строка-инструкция, явно разрешающая это на
+ЭТОТ конкретный ответ (например "[ФОРМАТ: можно ответить гифкой]"). Без
+такой строки — всегда обычный текст, даже если тема шутливая или уместна
+реакция. Это не твой выбор по вкусу — реальная частота гифок/стикеров
+контролируется кодом бота, а не тобой."""
 
     return response_formats_block
 
@@ -409,15 +414,21 @@ def get_system_prompt_for_situation(
     return _get_base_prompt(bot_name, available_stickers, role_section, text_only_mode)
 
 
-def get_context_prompt(context: str, message_text: str, rag_facts: str = "") -> str:
+def get_context_prompt(
+    context: str, message_text: str, rag_facts: str = "", media_hint: str = ""
+) -> str:
     """
     Generate the user prompt with context and current message.
-    
+
     Args:
         context: Formatted recent messages
         message_text: Current message to respond to
         rag_facts: Optional facts retrieved from LightRAG knowledge base
-        
+        media_hint: Optional per-turn instruction about whether GIPHY:/REACT:/
+            STICKER: is allowed this turn (see brain._build_media_hint).
+            Placed last — instructions near the end of the prompt are
+            followed more reliably than ones buried earlier.
+
     Returns:
         Formatted user prompt
     """
@@ -428,11 +439,13 @@ def get_context_prompt(context: str, message_text: str, rag_facts: str = "") -> 
 {rag_facts}
 ---
 """
-    
+
+    media_block = f"\n\n[ФОРМАТ: {media_hint}]" if media_hint else ""
+
     return f"""{knowledge_block}Последние сообщения в чате:
 {context}
 
-Новое сообщение для ответа: {message_text}"""
+Новое сообщение для ответа: {message_text}{media_block}"""
 
 
 # Bot name variations for mention detection.
@@ -500,6 +513,19 @@ INSULT_KEYWORDS: List[str] = [
     "нахуй", "пошел ты", "пошёл ты", "иди на",
     "заткнись", "затрахал", "бесполезн", "отстой", "говно",
     "сука", "сучка", "тварь",
+]
+
+
+# Explicit-request stems used by brain._detect_media_request() to force a
+# specific response format this turn (GIF/sticker) instead of leaving it to
+# the ~media_response_probability random roll. Kept simple/keyword-based —
+# same tradeoff as INSULT_KEYWORDS: false negatives just fall through to the
+# normal random-roll path, no big deal.
+GIF_REQUEST_KEYWORDS: List[str] = [
+    "гифк", "гиф ", "гифан", "giphy", "гифочку", "анимац",
+]
+STICKER_REQUEST_KEYWORDS: List[str] = [
+    "стикер", "стикр", "наклейк",
 ]
 
 

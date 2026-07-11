@@ -171,12 +171,25 @@ class GiphyClient:
 
 class StickerManager:
     """Manages sticker file IDs and sending."""
-    
+
     # Default sticker mapping (emotion -> file_id) - kept as backup
     DEFAULT_STICKERS: Dict[str, str] = {
         'happy': 'CAACAgIAAxkBAAEQUVxpdIeyvxepv5LBpDDNIWszpN8JJQAC85oAAgRqgUshcX0t9I5SSDgE',
     }
-    
+
+    # Which sticker-pack emoji(s) count as a match for each bot emotion name.
+    # Telegram sticker sets carry one associated emoji per sticker
+    # (sticker.emoji) — this lets us pick a sticker that actually matches
+    # the emotion the model asked for, instead of a purely random one.
+    EMOTION_EMOJIS: Dict[str, List[str]] = {
+        'happy': ['😄', '😊', '🙂', '😁', '😀'],
+        'sad': ['😢', '😞', '🙁', '😔'],
+        'laugh': ['😂', '🤣'],
+        'cool': ['😎'],
+        'think': ['🤔'],
+        'wtf': ['🤨', '😳', '😲', '🫤'],
+    }
+
     def __init__(self, custom_stickers: Optional[Dict[str, str]] = None):
         """
         Initialize sticker manager.
@@ -184,36 +197,48 @@ class StickerManager:
         self._stickers = self.DEFAULT_STICKERS.copy()
         if custom_stickers:
             self._stickers.update(custom_stickers)
-            
-        self._all_stickers: List[str] = []
-        
+
+        # (file_id, emoji) pairs for every sticker in the loaded set.
+        self._all_stickers: List[tuple] = []
+
     async def load_sticker_set(self, bot: Bot, set_name: str) -> None:
         """
-        Load all stickers from a specific sticker set.
-        
+        Load all stickers from a specific sticker set, keeping each
+        sticker's associated emoji so replies can be matched by emotion.
+
         Args:
             bot: Telegram Bot instance
             set_name: Name of the sticker set (e.g. 'userpack...')
         """
         try:
             sticker_set = await bot.get_sticker_set(set_name)
-            
-            self._all_stickers = [sticker.file_id for sticker in sticker_set.stickers]
+
+            self._all_stickers = [
+                (sticker.file_id, sticker.emoji or "") for sticker in sticker_set.stickers
+            ]
             logger.info(f"Loaded {len(self._all_stickers)} stickers from set '{set_name}'")
-            
+
         except Exception as e:
             logger.error(f"Failed to load sticker set '{set_name}': {e}")
-    
+
     def get_file_id(self, emotion: str) -> Optional[str]:
         """
-        Get a sticker. If a full set is loaded, return a random one from the set.
-        Otherwise try to find specific emotion mapping.
+        Get a sticker matching `emotion`. If a full set is loaded, prefer a
+        sticker whose pack emoji matches the emotion; fall back to any
+        sticker from the set if nothing matches. Otherwise try the manual
+        emotion->file_id mapping.
         """
-        # 1. If full set loaded, return random sticker (User Preference)
         if self._all_stickers:
-            return random.choice(self._all_stickers)
-            
-        # 2. Fallback to manual mapping
+            wanted_emojis = self.EMOTION_EMOJIS.get(emotion.lower().strip(), [])
+            matches = [
+                file_id for file_id, emoji in self._all_stickers if emoji in wanted_emojis
+            ]
+            if matches:
+                return random.choice(matches)
+            # No sticker in the pack carries that emoji — any sticker beats none.
+            return random.choice([file_id for file_id, _ in self._all_stickers])
+
+        # Fallback to manual mapping
         file_id = self._stickers.get(emotion.lower().strip(), '')
         return file_id if file_id else None
 
