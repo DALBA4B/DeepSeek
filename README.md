@@ -184,7 +184,7 @@ RagIngestTask.run()
     └── RagIngestor.ingest()
           ├── Сбор сообщений (Firebase → fallback daily_log)
           ├── Группировка по времени (блоки 10-15 мин, reply_to вшит в блок)
-          └── rag_client.insert(block) по одному → LightRAG делает extraction + embeddings
+          └── все блоки за период объединяются в ОДИН документ → rag_client.insert() → LightRAG сам делает extraction + embeddings + чанкинг
     ↓
 Отчёт в чат + обновление курсора (идемпотентность)
 ```

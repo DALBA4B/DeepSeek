@@ -244,11 +244,18 @@ class RagIngestor:
     # ------------------------------------------------------------------ #
     async def ingest(self, since: Optional[datetime] = None) -> dict:
         """
-        Run the full nightly ingest: collect → group → insert block by block.
+        Run the full nightly ingest: collect → group → insert as ONE document.
+
+        Time-blocks (see group_into_blocks) stay as visual sections inside
+        that single document — each keeps its own [HH:MM-HH:MM] header and
+        reply context — but are no longer split into separate LightRAG
+        documents. LightRAG already chunks a document internally (its own
+        "Chunks" column); splitting per-block ourselves on top of that just
+        fragmented one day's chat into many tiny unrelated documents for no
+        benefit, and made entity extraction see less context at once.
 
         On success the ingest cursor is advanced so the next run resumes from
-        "now". LightRAG failures on individual blocks are logged but do not
-        abort the whole run — partial progress is still persisted.
+        "now".
 
         Args:
             since: Start of the window to ingest. Defaults to the last cursor
@@ -285,29 +292,23 @@ class RagIngestor:
             since,
         )
 
+        combined_text = "\n\n".join(blocks)
+        # Unique per run: LightRAG treats file_source as a document identity
+        # key, not just a display label — reusing one across calls makes any
+        # insert after the first a 409 no-op (this bit us in practice: two
+        # manual /ragnow runs on the same day both silently inserted nothing
+        # because the date-only source already existed).
+        file_source = f"telegram_chat_{started_at.strftime('%Y-%m-%d_%H%M%S')}"
+
         inserted = 0
         failed = 0
-        ids: List[Optional[str]] = []
-        # Must be unique per block AND per run: LightRAG treats file_source as
-        # a document identity key, not just a display label — reusing one
-        # across calls makes every insert after the first a 409 no-op (this
-        # bit us in practice: two manual /ragnow runs on the same day both
-        # silently inserted nothing because the date-only source already
-        # existed). Timestamp with seconds + block index guarantees this
-        # never collides, even across multiple runs on the same day.
-        run_tag = started_at.strftime("%Y-%m-%d_%H%M%S")
-        for i, block in enumerate(blocks, 1):
-            file_source = f"telegram_chat_{run_tag}_{i}"
-            try:
-                doc_id = await self.rag_client.insert(block, file_source=file_source)
-                if doc_id is not None:
-                    ids.append(doc_id)
-                inserted += 1
-                logger.debug("RAG ingest: block %d/%d inserted", i, len(blocks))
-            except Exception as e:
-                # A single block failing must not kill the whole nightly run.
-                failed += 1
-                logger.warning("RAG ingest: block %d failed: %s", i, e)
+        try:
+            await self.rag_client.insert(combined_text, file_source=file_source)
+            inserted = 1
+            logger.debug("RAG ingest: combined document inserted (%d blocks)", len(blocks))
+        except Exception as e:
+            failed = 1
+            logger.warning("RAG ingest: combined insert failed: %s", e)
 
         stats = {
             "blocks": len(blocks),
