@@ -206,6 +206,7 @@ class Memory:
         message_id: int,
         save_to_firebase: bool = True,
         reply_to_text: Optional[str] = None,
+        chat_id: Optional[int] = None,
     ) -> ChatMessage:
         """
         Add a new message to both short-term and long-term memory.
@@ -219,6 +220,7 @@ class Memory:
             reply_to_text: If this message is a reply, the text of the replied-to
                 message. Kept on the ChatMessage so it shows up in context lines
                 and in the nightly RAG ingest (reply context stays with its block).
+            chat_id: Telegram chat ID (identifies which group the message is from).
 
         Returns:
             Created ChatMessage instance
@@ -232,6 +234,7 @@ class Memory:
             message_id=message_id,
             timestamp=now,
             reply_to_text=reply_to_text,
+            chat_id=chat_id,
         )
 
         # Add to short-term memory (deque auto-trims to maxlen)
@@ -333,19 +336,21 @@ class Memory:
         self,
         since: Optional[datetime] = None,
         until: Optional[datetime] = None,
+        chat_id_filter: Optional[int] = None,
     ) -> List[ChatMessage]:
         """
-        Fetch all user messages in a time window for the nightly RAG ingest.
+        Fetch all messages in a time window for the nightly RAG ingest.
 
         Source priority: Firebase (durable across restarts) → daily_log (RAM
-        fallback when Firebase is unavailable). Messages from the bot itself
-        (user_id == BOT_USER_ID) are excluded — they are already part of the
-        conversation context, not facts to extract.
+        fallback when Firebase is unavailable). **Bot messages are included** so
+        the ingest block preserves conversation context (e.g. bot asked "нравится
+        ли тебе кока кола?" and people replied "да" — both sides matter).
 
         Args:
             since: Inclusive lower bound (timezone-aware recommended). If None,
-                no lower bound (useful for "everything since last ingest").
-            until: Exclusive upper bound. If None, now (in configured timezone).
+                no lower bound.
+            until: Exclusive upper bound. If None, now.
+            chat_id_filter: If set, only return messages from this chat.
 
         Returns:
             Chronologically ordered list of ChatMessage in the window.
@@ -361,19 +366,31 @@ class Memory:
             try:
                 db = self._storage.get_client()
                 if db is not None:
-                    # Firestore stores timestamp either as a native datetime or
-                    # as an ISO string (older rows). Query the whole collection
-                    # and filter in Python — the mixed formats make a server-side
-                    # where() unreliable, and message volumes are daily-scale.
-                    docs = db.collection("messages").stream()
+                    # Server-side filtering by date keeps the query fast and cheap
+                    # even when the collection grows to thousands of documents.
+                    since_date = since.date() if since is not None else None
+                    until_date = until.date() if until is not None else None
+
+                    query = db.collection("messages")
+
+                    if since_date is not None:
+                        query = query.where("date", ">=", since_date.isoformat())
+                    if until_date is not None:
+                        query = query.where("date", "<=", until_date.isoformat())
+                    if chat_id_filter is not None:
+                        query = query.where("chat_id", "==", chat_id_filter)
+
+                    docs = list(query.stream())
                     for doc in docs:
                         msg = ChatMessage.from_dict(doc.to_dict())
-                        if msg.user_id == self.BOT_USER_ID:
-                            continue
+                        # Re-filter in Python for sub-day precision and chat_id
+                        # (older docs may not have chat_id at all).
                         ts = to_aware(msg.timestamp, tz)
                         if since is not None and ts < since:
                             continue
                         if ts >= until:
+                            continue
+                        if chat_id_filter is not None and msg.chat_id != chat_id_filter:
                             continue
                         messages.append(msg)
                     if messages:
@@ -381,19 +398,19 @@ class Memory:
                             "Firebase returned %d messages in the ingest window",
                             len(messages),
                         )
-                        messages.sort(key=lambda m: m.timestamp)
-                        return messages
+                    messages.sort(key=lambda m: m.timestamp)
+                    return messages
             except Exception as e:
                 logger.warning(f"Firebase query for period failed, falling back to daily_log: {e}")
 
         # Fallback: daily_log (RAM only — empty after a restart)
         for msg in self._daily_log:
-            if msg.user_id == self.BOT_USER_ID:
-                continue
             ts = to_aware(msg.timestamp, tz)
             if since is not None and ts < since:
                 continue
             if ts >= until:
+                continue
+            if chat_id_filter is not None and msg.chat_id != chat_id_filter:
                 continue
             messages.append(msg)
 

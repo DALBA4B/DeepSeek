@@ -140,14 +140,20 @@ class RagIngestor:
     # ------------------------------------------------------------------ #
     def collect_messages(self, since: Optional[datetime] = None) -> List[ChatMessage]:
         """
-        Gather all user messages since `since` (or for the last 24h if None).
+        Gather all messages since `since` (or for the last 24h if None).
 
-        Delegates to Memory.get_messages_for_period, which prefers Firebase
-        and falls back to the in-RAM daily_log.
+        Bot messages are included so ingest blocks preserve conversation context
+        (e.g. bot asked "нравится ли тебе кока кола?" and people replied "да").
+
+        Filters by the configured chat_id when available so multi-chat setups
+        don't mix data.
         """
         if since is None:
             since = get_now(self._tz) - timedelta(hours=24)
-        return self.memory.get_messages_for_period(since=since)
+        chat_id_filter = None
+        if self.config is not None and self.config.chat_id:
+            chat_id_filter = self.config.chat_id
+        return self.memory.get_messages_for_period(since=since, chat_id_filter=chat_id_filter)
 
     # ------------------------------------------------------------------ #
     # Group into time-coherent blocks (THE key step)
@@ -282,9 +288,10 @@ class RagIngestor:
         inserted = 0
         failed = 0
         ids: List[Optional[str]] = []
+        file_source = f"telegram_chat_{started_at.strftime('%Y-%m-%d')}"
         for i, block in enumerate(blocks, 1):
             try:
-                doc_id = await self.rag_client.insert(block)
+                doc_id = await self.rag_client.insert(block, file_source=file_source)
                 if doc_id is not None:
                     ids.append(doc_id)
                 inserted += 1

@@ -269,7 +269,7 @@ class RagClient:
             return None
         return context
 
-    async def insert(self, text: str) -> Optional[str]:
+    async def insert(self, text: str, file_source: str = "telegram_chat") -> Optional[str]:
         """
         Insert a block of text into the knowledge base. LightRAG will chunk
         it, extract entities/relations (via its configured LLM) and embed it
@@ -278,6 +278,8 @@ class RagClient:
         Args:
             text: A coherent block of chat (see rag_ingestor.py for how blocks
                   are built — grouped by time, with reply context inlined).
+            file_source: Label shown as the doc's source in LightRAG's UI.
+                This server rejects inserts without a non-empty file_source.
 
         Returns:
             A track/document id if LightRAG returned one, else None.
@@ -285,15 +287,14 @@ class RagClient:
         if not text or not text.strip():
             return None
 
-        payload = {"text": text}
+        payload = {"text": text, "file_source": file_source}
 
-        try:
-            data = await self._request(
-                "POST", "/documents", json=payload, timeout=self.insert_timeout
-            )
-        except RagClientError as e:
-            logger.warning(f"LightRAG insert failed: {e}")
-            return None
+        # Let RagClientError propagate — rag_ingestor.ingest() catches it per
+        # block to count `failed` correctly (swallowing it here would make
+        # every failed insert look like a success).
+        data = await self._request(
+            "POST", "/documents/text", json=payload, timeout=self.insert_timeout
+        )
 
         # Track id is useful for the ingestor's idempotency log
         return (

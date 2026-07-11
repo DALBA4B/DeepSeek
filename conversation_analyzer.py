@@ -26,6 +26,8 @@ from typing import List, Optional
 
 import aiohttp
 
+from prompts import get_name_variations
+
 logger = logging.getLogger(__name__)
 
 # ── Request token budget for the classifier ──────────────────────────
@@ -33,7 +35,7 @@ _CLASSIFIER_MAX_TOKENS = 200
 
 # ── Prompt template ────────────────────────────────────────────────
 _CLASSIFIER_PROMPT = """\
-Ты — анализатор группового чата. Оцени сообщение и верни JSON.
+Ты — анализатор группового чата. Бота зовут {bot_name}. Оцени сообщение и верни JSON.
 
 Контекст (последние сообщения):
 {context}
@@ -135,11 +137,10 @@ class ConversationAnalyzer:
             ClassificationResult with grade 0-3, memory flag, and optional
             rag_query. On failure returns a safe heuristic fallback.
         """
-        # Quick heuristic pre-check: bot name → always at least grade 2
-        if self._is_directly_addressed(message_context):
-            # Still go through LLM for memory/reaction nuance, but ensure
-            # minimum grade=2 unless LLM says otherwise.
-            pass  # handled in prompt — the bot name is in context
+        # Quick heuristic pre-check: bot name → always at least grade 2,
+        # even if the LLM (which now also sees {bot_name} in the prompt)
+        # disagrees. Belt-and-suspenders against misclassifying direct address.
+        directly_addressed = self._is_directly_addressed(message_context)
 
         prompt = self._build_prompt(message_context, recent_messages)
 
@@ -147,6 +148,8 @@ class ConversationAnalyzer:
             raw = await self._call_llm(prompt, max_tokens)
             result = self._parse_response(raw)
             if result is not None:
+                if directly_addressed and result.grade < 2:
+                    result.grade = 2
                 return result
         except Exception as e:
             logger.warning(f"Classifier LLM call failed: {e}")
@@ -170,6 +173,7 @@ class ConversationAnalyzer:
             else "Ответ на сообщение: нет"
         )
         return _CLASSIFIER_PROMPT.format(
+            bot_name=msg.bot_name,
             context=context_block,
             author=msg.author,
             message=msg.text,
@@ -293,4 +297,5 @@ class ConversationAnalyzer:
     @staticmethod
     def _is_directly_addressed(msg: _MessageContext) -> bool:
         """Check if the message directly addresses the bot."""
-        return msg.bot_name.lower() in msg.text.lower()
+        text_lower = msg.text.lower()
+        return any(variant in text_lower for variant in get_name_variations(msg.bot_name))

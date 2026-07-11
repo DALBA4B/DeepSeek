@@ -190,7 +190,9 @@ class DeepSeekBot:
 
             # Save to memory (short-term + daily_log + Firebase), with reply context
             self.memory.add_message(
-                user_id, username, text, message_id, reply_to_text=reply_text or None
+                user_id, username, text, message_id,
+                reply_to_text=reply_text or None,
+                chat_id=message.chat_id,
             )
 
             bot_was_recent = self.memory.bot_responded_recently(within_last_n=3)

@@ -88,6 +88,7 @@ class ChatMessage:
         message_id: Telegram message ID
         timestamp: When the message was received
         reply_to_text: If this is a reply, the text of the message being replied to
+        chat_id: Telegram chat ID (to distinguish data from different groups)
     """
     user_id: int
     username: str
@@ -95,6 +96,7 @@ class ChatMessage:
     message_id: int
     timestamp: datetime = field(default_factory=lambda: get_now("UTC"))
     reply_to_text: Optional[str] = None
+    chat_id: Optional[int] = None
 
     def to_dict(self) -> dict:
         """Convert to dictionary for Firebase storage."""
@@ -108,6 +110,8 @@ class ChatMessage:
         }
         if self.reply_to_text:
             data["reply_to_text"] = self.reply_to_text
+        if self.chat_id is not None:
+            data["chat_id"] = self.chat_id
         return data
 
     @classmethod
@@ -144,6 +148,7 @@ class ChatMessage:
             message_id=data.get("message_id", 0),
             timestamp=ts,
             reply_to_text=data.get("reply_to_text"),
+            chat_id=data.get("chat_id"),
         )
 
     def to_context_line(self) -> str:

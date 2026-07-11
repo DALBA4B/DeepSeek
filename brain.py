@@ -236,6 +236,7 @@ class Brain:
                 messages=messages,
                 max_tokens=dynamic_max_tokens,
                 temperature=dynamic_temperature,
+                extra_body={"thinking": {"type": "disabled"}},
             )
 
             answer = response.choices[0].message.content.strip()
