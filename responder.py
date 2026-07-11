@@ -369,6 +369,34 @@ class Responder:
         # Fallback to text
         return await self._send_text(message, emoji)
 
+    async def send_silent_reaction(self, message: Message, emoji: str) -> bool:
+        """
+        Set a Telegram reaction with NO text fallback.
+
+        Used when the bot chose to react instead of replying at all (grade 0
+        — "don't butt into the conversation"). Unlike _send_reaction(), this
+        never falls back to a text message: if setting the reaction fails,
+        the bot simply stays silent, which was the entire point of choosing
+        this path over a normal reply.
+
+        Args:
+            message: Message to react to
+            emoji: Emoji to use
+
+        Returns:
+            True if the reaction was set successfully
+        """
+        try:
+            await message.set_reaction(
+                reaction=[ReactionTypeEmoji(emoji=emoji)],
+                is_big=False,
+            )
+            logger.info(f"Silent reaction set: {emoji}")
+            return True
+        except Exception as e:
+            logger.warning(f"Silent reaction failed, staying silent: {e}")
+            return False
+
     async def _send_gif(self, message: Message, search_query: str, bot: Bot) -> bool:
         """
         Search Giphy API and send a random GIF.

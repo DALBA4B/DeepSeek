@@ -18,7 +18,7 @@ from telegram.ext import Application, MessageHandler, CommandHandler, filters, C
 from config import get_config, ConfigError
 from models import BotConfig
 from memory import Memory, RecentResponseTracker
-from brain import Brain
+from brain import Brain, SILENT_REACT_PREFIX
 from responder import Responder, ResponseParser
 from rag_client import RagClient
 from rag_ingestor import RagIngestor
@@ -213,6 +213,14 @@ class DeepSeekBot:
 
             if response is None:
                 logger.debug("Bot decided to stay silent (grade 0)")
+                return
+
+            # Reaction-only ack (grade 0 but chose not to be fully silent) —
+            # bypasses the normal text/GIPHY/STICKER/REACT pipeline entirely,
+            # no message history tracking, since this isn't really a "reply".
+            if response.startswith(SILENT_REACT_PREFIX):
+                emoji = response[len(SILENT_REACT_PREFIX):]
+                await self.responder.send_silent_reaction(message, emoji)
                 return
 
             logger.info(f"Generated response: {response[:50]}")

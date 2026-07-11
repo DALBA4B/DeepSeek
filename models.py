@@ -219,6 +219,7 @@ class BotConfig:
     use_smart_respond: bool = False  # Use AI to decide whether to respond (costs API calls)
     text_only_mode: bool = False  # Only text responses (no stickers, GIFs, reactions)
     media_response_probability: float = 0.05  # chance of an unprompted GIF/sticker reply
+    silent_reaction_probability: float = 0.03  # chance of a reaction-only "ack" instead of full silence on grade 0
     
     # Giphy settings
     giphy_api_url: str = "https://api.giphy.com/v1/gifs/search"

@@ -120,6 +120,26 @@ def _detect_media_request(message_text: str) -> Optional[str]:
     return None
 
 
+# Prefix for a "react instead of full silence" result from analyze_and_respond
+# (see _pick_silent_reaction_emoji) — main.py checks for this specifically and
+# routes it to Responder.send_silent_reaction() instead of the normal
+# text/GIPHY/STICKER/REACT pipeline (which has its own reaction-vs-text
+# fallback heuristic that would defeat the point of "don't butt in").
+SILENT_REACT_PREFIX = "SILENT_REACT:"
+
+_SILENT_REACTION_EMOJIS = {
+    "joke": ["😂", "💀", "🔥"],
+    "tease": ["😏", "👀"],
+}
+_DEFAULT_SILENT_REACTION_EMOJIS = ["👍", "😂"]
+
+
+def _pick_silent_reaction_emoji(situation: str) -> str:
+    """Pick a reaction emoji matching the situation, for the grade==0 ack."""
+    candidates = _SILENT_REACTION_EMOJIS.get(situation, _DEFAULT_SILENT_REACTION_EMOJIS)
+    return random.choice(candidates)
+
+
 _RANDOM_MEDIA_HINTS = (
     "можно один раз ответить гифкой (GIPHY:<запрос>), если это в тему",
     "можно один раз ответить стикером (STICKER:<эмоция>), если это в тему",
@@ -315,8 +335,21 @@ class Brain:
             result.from_fallback,
         )
 
-        # Step 2: Skip if grade == 0
+        # Step 2: Skip if grade == 0 — but occasionally just react instead of
+        # staying fully silent (e.g. someone told a joke elsewhere in the
+        # conversation, not aimed at the bot — a reaction acknowledges it
+        # without butting in with a full reply). No DeepSeek call needed.
         if result.grade == 0:
+            if (
+                not self.config.text_only_mode
+                and random.random() < self.config.silent_reaction_probability
+            ):
+                emoji = _pick_silent_reaction_emoji(result.situation)
+                logger.info(
+                    "Silent reaction instead of full silence: %s (situation=%s)",
+                    emoji, result.situation,
+                )
+                return f"{SILENT_REACT_PREFIX}{emoji}"
             return None
 
         # Step 2b: Grudge escalation for "defend" situations. We trust the
