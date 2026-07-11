@@ -288,8 +288,16 @@ class RagIngestor:
         inserted = 0
         failed = 0
         ids: List[Optional[str]] = []
-        file_source = f"telegram_chat_{started_at.strftime('%Y-%m-%d')}"
+        # Must be unique per block AND per run: LightRAG treats file_source as
+        # a document identity key, not just a display label — reusing one
+        # across calls makes every insert after the first a 409 no-op (this
+        # bit us in practice: two manual /ragnow runs on the same day both
+        # silently inserted nothing because the date-only source already
+        # existed). Timestamp with seconds + block index guarantees this
+        # never collides, even across multiple runs on the same day.
+        run_tag = started_at.strftime("%Y-%m-%d_%H%M%S")
         for i, block in enumerate(blocks, 1):
+            file_source = f"telegram_chat_{run_tag}_{i}"
             try:
                 doc_id = await self.rag_client.insert(block, file_source=file_source)
                 if doc_id is not None:
