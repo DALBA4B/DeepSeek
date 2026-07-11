@@ -301,9 +301,17 @@ class DeepSeekBot:
             else:
                 stats_line = "\n\n🕒 Индексаций ещё не было"
 
+        # How often the bot actually reaches for memory, and how often
+        # LightRAG has something to say (process-local since last restart).
+        usage = self.brain.get_rag_usage_stats()
+        usage_line = (
+            f"\n\n🧠 Обращений к памяти: {usage['needs_memory']}/{usage['total_classified']} сообщений"
+            f"\n✅ Найдено фактов: {usage['facts_retrieved']} ({usage['hit_rate_pct']}%)"
+        )
+
         await context.bot.send_message(
             chat_id=chat_id,
-            text=f"📊 LightRAG: {status}\n🔗 URL: {self.config.lightrag_api_url}{stats_line}",
+            text=f"📊 LightRAG: {status}\n🔗 URL: {self.config.lightrag_api_url}{stats_line}{usage_line}",
         )
 
     async def _cmd_ragnow(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -413,6 +421,38 @@ class DeepSeekBot:
             text="✅ База знаний очищена" if ok else "❌ Не удалось очистить базу",
         )
 
+    async def _cmd_mood(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """
+        Handle /mood: show the bot's current grudge level towards a person
+        (reply to their message to target them). Reads GrudgeTracker state —
+        purely in-RAM, resets on restart, escalates "Ответочка" tone only.
+        """
+        if not update.effective_chat or not update.message:
+            return
+        chat_id = update.effective_chat.id
+
+        if not update.message.reply_to_message or not update.message.reply_to_message.from_user:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="Ответь командой /mood на чьё-нибудь сообщение, чтобы узнать уровень обиды на него.",
+            )
+            return
+
+        target = update.message.reply_to_message.from_user
+        target_name = target.first_name or target.username or "этот человек"
+        level = self.brain.grudge_level_for(chat_id, target.id)
+
+        if level == 0:
+            mood_text = "🙂 спокоен, обид нет"
+        elif level <= 2:
+            mood_text = f"😐 слегка задет (уровень {level})"
+        else:
+            mood_text = f"🔥 реально обижен (уровень {level}) — ответочка будет жёстче"
+
+        await context.bot.send_message(
+            chat_id=chat_id, text=f"Настроение насчёт {target_name}: {mood_text}"
+        )
+
     # ------------------------------------------------------------------ #
     # Lifecycle
     # ------------------------------------------------------------------ #
@@ -485,6 +525,7 @@ class DeepSeekBot:
             self._app.add_handler(CommandHandler("ragnow", self._cmd_ragnow))
             self._app.add_handler(CommandHandler("profile", self._cmd_profile))
             self._app.add_handler(CommandHandler("ragclean", self._cmd_ragclean))
+            self._app.add_handler(CommandHandler("mood", self._cmd_mood))
 
             self._app.post_init = self._startup_handler
             self._app.post_shutdown = self._shutdown_handler

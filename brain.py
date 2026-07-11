@@ -64,6 +64,46 @@ class GrudgeTracker:
         return sum(1 for ts in self._attacks[key] if ts >= cutoff)
 
 
+class RagUsageStats:
+    """
+    Process-local counters for how much LightRAG memory actually gets used.
+
+    Answers the question from /ragstats: "как часто система обращается к
+    памяти и насколько это влияет на ответ?" — not persisted (resets on
+    restart), same tradeoff as GrudgeTracker: this is an observability aid,
+    not data that needs to survive a redeploy.
+    """
+
+    def __init__(self) -> None:
+        self.total_classified = 0
+        self.needs_memory = 0
+        self.facts_retrieved = 0
+
+    def record_classification(self, needs_memory: bool) -> None:
+        """Call once per classify() result."""
+        self.total_classified += 1
+        if needs_memory:
+            self.needs_memory += 1
+
+    def record_retrieval(self, facts_found: bool) -> None:
+        """Call once per RagClient.retrieve() attempt (needs_memory==True)."""
+        if facts_found:
+            self.facts_retrieved += 1
+
+    def as_dict(self) -> dict:
+        hit_rate = (
+            round(self.facts_retrieved / self.needs_memory * 100, 1)
+            if self.needs_memory
+            else 0.0
+        )
+        return {
+            "total_classified": self.total_classified,
+            "needs_memory": self.needs_memory,
+            "facts_retrieved": self.facts_retrieved,
+            "hit_rate_pct": hit_rate,
+        }
+
+
 class RequestClassifier:
     """
     Classifies message complexity to determine appropriate response length.
@@ -167,6 +207,7 @@ class Brain:
                 for situation in _SITUATIONS
             }
             self._grudge = GrudgeTracker()
+            self._rag_usage = RagUsageStats()
             logger.info("Brain initialized: DeepSeek client ready")
         except Exception as e:
             logger.error(f"Failed to initialize Brain: {e}")
@@ -215,6 +256,7 @@ class Brain:
             bot_responded_recently=bot_responded_recently,
         )
         result = await self._analyzer.classify(msg_ctx, recent_messages)
+        self._rag_usage.record_classification(result.needs_memory)
 
         logger.info(
             "Classification: grade=%d needs_memory=%s query=%r situation=%s reason=%r fallback=%s",
@@ -248,6 +290,7 @@ class Brain:
         rag_facts = ""
         if result.needs_memory and self._rag_client and result.rag_query:
             rag_facts = await self._rag_client.retrieve(result.rag_query)
+            self._rag_usage.record_retrieval(bool(rag_facts))
             if rag_facts:
                 logger.info("LightRAG facts retrieved (%d chars)", len(rag_facts))
             else:
@@ -460,6 +503,14 @@ class Brain:
     def update_system_prompt(self, new_prompt: str) -> None:
         self._system_prompt = new_prompt
         logger.info("System prompt updated")
+
+    def grudge_level_for(self, chat_id: Optional[int], user_id: int) -> int:
+        """Current grudge level for (chat_id, user_id) — used by /mood."""
+        return self._grudge.grudge_level((chat_id, user_id))
+
+    def get_rag_usage_stats(self) -> dict:
+        """Process-local LightRAG usage counters — used by /ragstats."""
+        return self._rag_usage.as_dict()
 
     @property
     def available_stickers(self) -> List[str]:

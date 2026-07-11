@@ -5,12 +5,16 @@
 ## Особенности
 
 - ✅ **AI-powered responses** — использует DeepSeek API для генерации ответов
+- ✅ **Situation-aware стиль** — один быстрый вызов классификатора решает не только «отвечать/не отвечать», но и в каком стиле (шутка/помощь/болтовня/подкол/ответочка), под каждый стиль свой промпт
+- ✅ **Долгосрочная память через LightRAG** — векторная база знаний о людях в чате, семантический поиск фактов, а не keyword-matching
+- ✅ **«Ответочка»** — детектор наездов на бота + память обид (`GrudgeTracker`), тон эскалируется при повторных атаках
 - ✅ **Multiple response formats** — текст, реакции emoji, гифки, стикеры
-- ✅ **Smart memory system** — краткосрочная (RAM) и долгосрочная (Firebase) память
-- ✅ **Natural conversation** — 10% случайный ответ, реагирует на упоминания и вопросы
+- ✅ **Smart memory system** — краткосрочная (RAM) и долгосрочная (Firebase + LightRAG) память
+- ✅ **Retry/backoff** — все вызовы DeepSeek переживают транзиентные сбои (таймаут/5xx/429) без деградации качества
 - ✅ **Secure credentials** — все секреты хранятся в `.env` файле
 - ✅ **Modular architecture** — чистый, типизированный код с dependency injection
-- ✅ **Async HTTP** — неблокирующие запросы к Giphy API
+- ✅ **Async HTTP** — неблокирующие запросы к DeepSeek/LightRAG/Giphy
+- ✅ **Тесты** — юнит-тесты на все места, где реально ловились живые баги (классификатор, обиды, ретраи, парсинг ответов)
 - ✅ **Graceful shutdown** — корректное завершение работы
 
 ## Требования
@@ -71,21 +75,27 @@ python main.py
 ├── models.py               # Модели данных (dataclasses)
 ├── prompts.py              # Системные промпты для DeepSeek
 ├── utils.py                # Общие хелперы (timezone-aware время)
-├── main.py                 # Точка входа, класс DeepSeekBot
+├── main.py                 # Точка входа, класс DeepSeekBot, команды
 ├── memory.py               # Двухуровневая память (RAM + Firebase)
-├── brain.py                # V2: классификация (0-3) + LightRAG + генерация
-├── conversation_analyzer.py # Fast-классификатор: grade 0-3 + needs_memory + rag_query
+├── brain.py                # V2: ситуативные промпты, GrudgeTracker, RagUsageStats, генерация
+├── conversation_analyzer.py # Fast-классификатор: grade 0-3 + situation + needs_memory + rag_query
 ├── rag_client.py           # Async-клиент LightRAG (retrieve/insert/clear/health)
 ├── rag_ingestor.py         # Ночной pipeline: сбор → группировка по времени → insert
+├── retry.py                # Ретраи/backoff для сетевых вызовов DeepSeek (без внешних зависимостей)
 ├── responder.py            # Отправка разных типов ответов (текст/реакция/гиф/стикер)
 ├── night_analyzator.py     # Планировщик + RagIngestTask (ночная индексация)
-├── graph_memory.py         # ⚠️ Устаревший граф знаний (отключён, оставлен для справки)
-├── deepseek_analyzer.py    # ⚠️ Устаревший ночной анализатор (отключён, оставлен для справки)
+├── tests/                  # Юнит-тесты (pytest + pytest-asyncio)
 ├── requirements.txt        # Зависимости Python
-├── railway.json            # Конфиг деплоя на Railway
-├── render.yaml             # Конфиг деплоя на Render
+├── requirements-dev.txt    # + pytest для разработки/тестов
+├── pytest.ini              # Конфиг pytest (asyncio_mode, pythonpath)
+├── railway.json             # Конфиг деплоя на Railway
+├── render.yaml               # Конфиг деплоя на Render
 └── README.md               # Этот файл
 ```
+
+> Старый keyword-based граф знаний (`graph_memory.py`) и синхронный ночной
+> анализатор (`deepseek_analyzer.py`) полностью удалены — их заменила
+> Фаза B (LightRAG, см. `PHASE_B_PLAN.md`).
 
 ## Архитектура (Фаза B — LightRAG)
 
@@ -99,11 +109,12 @@ DeepSeekBot.handle_message()
     ├── memory.add_message()  ← сохраняем (вкл. reply_to_message)
     ↓
 [Шаг 1] Brain.analyze_and_respond()
-    ├── ConversationAnalyzer.classify()   ← 1 вызов fast DeepSeek
-    │     → { grade: 0-3, needs_memory, rag_query }
+    ├── ConversationAnalyzer.classify()   ← 1 вызов fast DeepSeek (с ретраем)
+    │     → { grade: 0-3, situation, needs_memory, rag_query }
     ├── grade == 0?  → молчим
+    ├── situation == "defend"? → GrudgeTracker.grudge_level() эскалирует тон
     ├── needs_memory? → RagClient.retrieve(rag_query)  ← LightRAG (только факты)
-    └── generate_response()                ← main DeepSeek (grade → формат/токены)
+    └── generate_response()   ← main DeepSeek, промпт под situation, grade → формат/токены
     ↓
 Responder.send_response()
     └── ResponseParser → TEXT / REACT / GIPHY / STICKER
@@ -119,6 +130,19 @@ Telegram Response
 | 1 | Короткая реакция (стикер/гифка/смайл/1-3 слова) |
 | 2 | Обычный содержательный ответ |
 | 3 | Развёрнутый ответ с упором на факты из LightRAG |
+
+### Ситуация (стиль ответа)
+
+Тот же вызов классификатора, что определяет `grade`, определяет и `situation` —
+под каждую свой системный промпт (`prompts.py`), а не один блендированный на все случаи:
+
+| situation | Когда | Особенность промпта |
+|-----------|-------|----------------------|
+| `joke` | собеседник шутит/мем/абсурд | учит подхватывать шутку изнутри («yes-and»), а не комментировать со стороны |
+| `help` | реальный вопрос, нужна помощь | по делу, без розыгрышей |
+| `casual` | обычная болтовня | нейтральный дефолт |
+| `tease` | уместен дружеский подкол | лёгкая ирония |
+| `defend` | наезд/оскорбление в адрес бота | мат разрешён, жёсткие ответы; `GrudgeTracker` держит счёт повторных наездов `(chat_id, user_id)` за последние 30 минут — при повторных атаках подключается более злой промпт и температура выше (не подавляет defend кулдауном — классификатор сам решает когда огрызаться на каждое сообщение) |
 
 ### Ночной pipeline (LightRAG)
 
@@ -139,10 +163,13 @@ RagIngestTask.run()
 | Команда | Действие |
 |---------|----------|
 | `/daily_log` | Сообщения за сегодня (для отладки) |
-| `/ragstats` | Статус LightRAG + последняя индексация |
+| `/ragstats` | Статус LightRAG, последняя индексация + метрики использования памяти (сколько раз обращались, сколько раз нашли факты) |
 | `/ragnow` | Вручную запустить индексацию за 24ч |
 | `/profile <имя>` | Что бот знает о человеке (из LightRAG) |
 | `/ragclean confirm` | ⚠️ Полностью очистить базу знаний |
+| `/mood` (ответом на сообщение) | Текущий уровень «обиды» бота на этого человека (`GrudgeTracker`) |
+
+> Счётчики `/ragstats`/`/mood` живут в памяти процесса и сбрасываются при рестарте бота — это метрики наблюдаемости, не персистентные данные.
 
 ## Безопасность
 
@@ -161,8 +188,17 @@ RagIngestTask.run()
 
 ## Тестирование
 
-Автоматические тесты пока не подключены (в планах на V2). Для проверки
-запусти бота локально и понаблюдай за логами (см. «Быстрый старт»):
+Юнит-тесты покрывают чисто логические места без сети — те, где реально
+ловились живые баги (классификатор, ответочка, ретраи, парсинг ответа):
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+Сетевые вызовы (DeepSeek, LightRAG, Telegram) в тестах не выполняются —
+везде подставляются фейки/моки. Для end-to-end проверки запусти бота
+локально и понаблюдай за логами:
 
 ```bash
 python main.py
@@ -172,14 +208,14 @@ python main.py
 
 ### Изменение личности бота
 
-В `prompts.py` отредактируй функцию `get_system_prompt()`:
-
-```python
-def get_system_prompt(bot_name: str, available_stickers: List[str]) -> str:
-    return f"""Ты {bot_name} - [твое описание персоны]
-    ...
-    """
-```
+Промпт собирается по ситуации (`joke`/`help`/`casual`/`tease`/`defend`), а не
+единым блоком. В `prompts.py` каждой ситуации соответствует свой
+`ROLE_BLOCK_*` (например `ROLE_BLOCK_JOKE`, `ROLE_BLOCK_DEFEND`,
+`ROLE_BLOCK_DEFEND_ESCALATED` для повторных наездов) — редактируй нужный
+блок точечно. `get_system_prompt_for_situation()` собирает финальный промпт
+из общей базы (`_get_base_prompt`) + выбранного ролевого блока.
+`get_system_prompt()` (без `situation`) — legacy-вариант со всеми ролями
+сразу, используется только как fallback для неизвестной ситуации.
 
 ### Изменение имени и вариаций упоминаний
 
