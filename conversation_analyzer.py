@@ -27,6 +27,7 @@ from typing import List, Optional
 import aiohttp
 
 from prompts import get_name_variations, INSULT_KEYWORDS
+from retry import DeepSeekHTTPError, retry_async
 
 logger = logging.getLogger(__name__)
 
@@ -122,11 +123,18 @@ class ConversationAnalyzer:
         base_url: str = "https://api.deepseek.com",
         model: str = "deepseek-chat",
         temperature: float = 0.3,
+        max_attempts: int = 2,
+        retry_base_delay: float = 0.4,
     ) -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.temperature = temperature
+        # Hot path: this classifier fires on every incoming message, so keep
+        # the retry budget small — one retry catches a transient blip
+        # without piling up multi-second delays on every message.
+        self.max_attempts = max_attempts
+        self.retry_base_delay = retry_base_delay
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -158,7 +166,13 @@ class ConversationAnalyzer:
         prompt = self._build_prompt(message_context, recent_messages)
 
         try:
-            raw = await self._call_llm(prompt, max_tokens)
+            raw = await retry_async(
+                lambda: self._call_llm(prompt, max_tokens),
+                attempts=self.max_attempts,
+                base_delay=self.retry_base_delay,
+                max_delay=0.8,
+                jitter=0.2,
+            )
             result = self._parse_response(raw)
             if result is not None:
                 if directly_addressed and result.grade < 2:
@@ -229,7 +243,7 @@ class ConversationAnalyzer:
             ) as resp:
                 text = await resp.text()
                 if resp.status >= 400:
-                    raise RuntimeError(f"DeepSeek {resp.status}: {text[:200]}")
+                    raise DeepSeekHTTPError(resp.status, text[:200])
                 data = json.loads(text)
                 return data["choices"][0]["message"]["content"]
 

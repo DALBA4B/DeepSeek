@@ -147,7 +147,12 @@ def load_config() -> BotConfig:
         deepseek_base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
         deepseek_model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
         deepseek_temperature=_get_optional_float("DEEPSEEK_TEMPERATURE", 1.0),
-        
+        deepseek_timeout=_get_optional_float("DEEPSEEK_TIMEOUT", 30.0),
+        deepseek_max_attempts=_get_optional_int("DEEPSEEK_MAX_ATTEMPTS", 3),
+        deepseek_retry_base_delay=_get_optional_float("DEEPSEEK_RETRY_BASE_DELAY", 0.5),
+        classifier_max_attempts=_get_optional_int("CLASSIFIER_MAX_ATTEMPTS", 2),
+        classifier_retry_base_delay=_get_optional_float("CLASSIFIER_RETRY_BASE_DELAY", 0.4),
+
         # Response settings
         random_response_probability=_get_optional_float("RANDOM_RESPONSE_PROBABILITY", 0.1),
         use_smart_respond=os.getenv("USE_SMART_RESPOND", "false").lower() in ("true", "1", "yes"),

@@ -9,7 +9,7 @@ import asyncio
 import logging
 import random
 from collections import defaultdict, deque
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Deque, Dict, Hashable, List, Optional, Tuple
 
 from openai import OpenAI
@@ -25,6 +25,7 @@ from prompts import (
 )
 from rag_client import RagClient, RagClientError
 from conversation_analyzer import ConversationAnalyzer, ClassificationResult, _MessageContext
+from retry import retry_sync
 
 logger = logging.getLogger(__name__)
 
@@ -53,13 +54,13 @@ class GrudgeTracker:
 
     def record_attack(self, key: Hashable) -> None:
         """Note that `key` just attacked the bot (called once per attack)."""
-        self._attacks[key].append(datetime.utcnow())
+        self._attacks[key].append(datetime.now(timezone.utc))
 
     def grudge_level(self, key: Hashable) -> int:
         """How many attacks from `key` fall within the grudge window (excluding the current one)."""
         if key not in self._attacks:
             return 0
-        cutoff = datetime.utcnow() - self._grudge_window
+        cutoff = datetime.now(timezone.utc) - self._grudge_window
         return sum(1 for ts in self._attacks[key] if ts >= cutoff)
 
 
@@ -130,12 +131,15 @@ class Brain:
             base_url=config.deepseek_base_url,
             model="deepseek-chat",  # fast model for classification
             temperature=0.3,
+            max_attempts=config.classifier_max_attempts,
+            retry_base_delay=config.classifier_retry_base_delay,
         )
 
         try:
             self.client = OpenAI(
                 api_key=config.deepseek_api_key,
                 base_url=config.deepseek_base_url,
+                timeout=config.deepseek_timeout,
             )
             # Default/legacy blended prompt — used as a fallback for unknown
             # situations. Kept immutable after init (see update_system_prompt
@@ -344,12 +348,18 @@ class Brain:
                 },
             ]
 
-            response = self.client.chat.completions.create(
-                model=self.config.deepseek_model,
-                messages=messages,
-                max_tokens=dynamic_max_tokens,
-                temperature=dynamic_temperature,
-                extra_body={"thinking": {"type": "disabled"}},
+            response = retry_sync(
+                lambda: self.client.chat.completions.create(
+                    model=self.config.deepseek_model,
+                    messages=messages,
+                    max_tokens=dynamic_max_tokens,
+                    temperature=dynamic_temperature,
+                    extra_body={"thinking": {"type": "disabled"}},
+                ),
+                attempts=self.config.deepseek_max_attempts,
+                base_delay=self.config.deepseek_retry_base_delay,
+                max_delay=4.0,
+                jitter=0.3,
             )
 
             answer = response.choices[0].message.content.strip()

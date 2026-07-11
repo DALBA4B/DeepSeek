@@ -5,9 +5,6 @@ Main entry point for the DeepSeek Telegram bot.
 Phase B (LightRAG): the answer pipeline now goes through
 Brain.analyze_and_respond() (classify grade 0-3 → fetch LightRAG facts →
 generate), and a nightly RagIngestTask feeds the day's chat into LightRAG.
-
-The legacy knowledge-graph pipeline (graph_memory.py + deepseek_analyzer.py)
-is kept on disk for reference but is no longer wired in here.
 """
 
 import logging
