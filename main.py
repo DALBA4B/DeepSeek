@@ -210,6 +210,8 @@ class DeepSeekBot:
                 reply_text=reply_text or None,
                 bot_responded_recently=bot_was_recent,
                 avoid_responses=self._response_tracker.get_avoid_list(),
+                user_id=user_id,
+                chat_id=message.chat_id,
             )
 
             if response is None:

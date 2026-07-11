@@ -8,16 +8,59 @@ Integrates with LightRAG for long-term knowledge about chat participants.
 import asyncio
 import logging
 import random
-from typing import List, Optional
+from collections import defaultdict, deque
+from datetime import datetime, timedelta
+from typing import Deque, Dict, Hashable, List, Optional, Tuple
 
 from openai import OpenAI
 
 from models import BotConfig, ChatMessage, ParsedResponse, RequestComplexity, TokenRange
-from prompts import get_system_prompt, get_context_prompt, get_name_variations, CONTINUATION_TRIGGERS, FALLBACK_RESPONSES
+from prompts import (
+    get_system_prompt,
+    get_system_prompt_for_situation,
+    get_context_prompt,
+    get_name_variations,
+    CONTINUATION_TRIGGERS,
+    FALLBACK_RESPONSES,
+)
 from rag_client import RagClient, RagClientError
 from conversation_analyzer import ConversationAnalyzer, ClassificationResult, _MessageContext
 
 logger = logging.getLogger(__name__)
+
+# Situations the classifier can emit — see conversation_analyzer._SITUATIONS.
+_SITUATIONS = ("joke", "help", "casual", "tease", "defend")
+
+
+class GrudgeTracker:
+    """
+    Lightweight in-RAM tracker for "who recently attacked the bot".
+
+    Process-local only (no Firebase) — resets on redeploy/restart, the same
+    tradeoff already accepted by RecentResponseTracker (memory.py) and the
+    daily_log RAM fallback. This only needs to survive one running process:
+    it decides how hot a "defend" reply should be (repeat offender within
+    the window → escalated tone). It never gates WHETHER the bot defends —
+    that call is trusted to the classifier's own per-message judgement.
+
+    Keyed by an arbitrary hashable (this module uses (chat_id, user_id) so a
+    grudge doesn't leak across chats or users).
+    """
+
+    def __init__(self, grudge_window_sec: int = 1800):
+        self._grudge_window = timedelta(seconds=grudge_window_sec)
+        self._attacks: Dict[Hashable, Deque[datetime]] = defaultdict(lambda: deque(maxlen=20))
+
+    def record_attack(self, key: Hashable) -> None:
+        """Note that `key` just attacked the bot (called once per attack)."""
+        self._attacks[key].append(datetime.utcnow())
+
+    def grudge_level(self, key: Hashable) -> int:
+        """How many attacks from `key` fall within the grudge window (excluding the current one)."""
+        if key not in self._attacks:
+            return 0
+        cutoff = datetime.utcnow() - self._grudge_window
+        return sum(1 for ts in self._attacks[key] if ts >= cutoff)
 
 
 class RequestClassifier:
@@ -94,11 +137,32 @@ class Brain:
                 api_key=config.deepseek_api_key,
                 base_url=config.deepseek_base_url,
             )
+            # Default/legacy blended prompt — used as a fallback for unknown
+            # situations. Kept immutable after init (see update_system_prompt
+            # note below): Brain is a single instance shared across all
+            # concurrently-handled messages, so per-message prompt swapping
+            # must never mutate shared state.
             self._system_prompt = get_system_prompt(
                 config.bot_name,
                 self._available_stickers,
                 text_only_mode=config.text_only_mode,
             )
+            # One prompt per situation, built once — plain dict lookup at
+            # request time, no shared mutable state. Fixes "не понимал в
+            # каком стиле ответить": the model gets exactly one role instead
+            # of five to average over. "defend" here is grudge_level=0; a
+            # higher grudge_level rebuilds a hotter prompt on the fly in
+            # generate_response() (still just a local variable, not stored).
+            self._situation_prompts: Dict[str, str] = {
+                situation: get_system_prompt_for_situation(
+                    config.bot_name,
+                    self._available_stickers,
+                    situation=situation,
+                    text_only_mode=config.text_only_mode,
+                )
+                for situation in _SITUATIONS
+            }
+            self._grudge = GrudgeTracker()
             logger.info("Brain initialized: DeepSeek client ready")
         except Exception as e:
             logger.error(f"Failed to initialize Brain: {e}")
@@ -115,6 +179,8 @@ class Brain:
         reply_text: Optional[str] = None,
         bot_responded_recently: bool = False,
         avoid_responses: Optional[List[str]] = None,
+        user_id: Optional[int] = None,
+        chat_id: Optional[int] = None,
     ) -> Optional[str]:
         """
         V2 main entry point. One-stop: classify → fetch memory → generate.
@@ -126,6 +192,12 @@ class Brain:
             reply_text: If the message is a reply, the text being replied to.
             bot_responded_recently: Whether the bot answered in the last few msgs.
             avoid_responses: Recent bot responses to avoid repeating.
+            user_id: Telegram numeric user id — used to key grudge/cooldown
+                tracking for "defend" situations. Optional so callers that
+                don't have it (or tests) still work; grudge escalation is
+                simply skipped when absent.
+            chat_id: Telegram chat id — combined with user_id so a grudge in
+                one chat doesn't leak into another.
 
         Returns:
             Generated response text, or None if grade==0 (skip).
@@ -141,10 +213,11 @@ class Brain:
         result = await self._analyzer.classify(msg_ctx, recent_messages)
 
         logger.info(
-            "Classification: grade=%d needs_memory=%s query=%r reason=%r fallback=%s",
+            "Classification: grade=%d needs_memory=%s query=%r situation=%s reason=%r fallback=%s",
             result.grade,
             result.needs_memory,
             result.rag_query,
+            result.situation,
             result.reason,
             result.from_fallback,
         )
@@ -152,6 +225,20 @@ class Brain:
         # Step 2: Skip if grade == 0
         if result.grade == 0:
             return None
+
+        # Step 2b: Grudge escalation for "defend" situations. We trust the
+        # classifier's own per-message situation call here (it already
+        # reliably detects an ongoing attack even without a fresh name
+        # mention or keyword hit) — grudge_level only controls HOW hot the
+        # comeback is, it never suppresses/downgrades a defend the model
+        # already decided on.
+        situation = result.situation
+        grudge_level = 0
+        if situation == "defend" and user_id is not None:
+            key = (chat_id, user_id)
+            grudge_level = self._grudge.grudge_level(key)
+            self._grudge.record_attack(key)
+            logger.info("Defend triggered for %s: grudge_level=%d", key, grudge_level)
 
         # Step 3: Fetch facts from LightRAG if needed
         rag_facts = ""
@@ -174,6 +261,8 @@ class Brain:
             rag_facts=rag_facts,
             grade=result.grade,
             avoid_responses=avoid_responses,
+            situation=situation,
+            grudge_level=grudge_level,
         )
 
     # ------------------------------------------------------------------ #
@@ -186,6 +275,8 @@ class Brain:
         rag_facts: str = "",
         grade: int = 2,
         avoid_responses: Optional[List[str]] = None,
+        situation: str = "casual",
+        grudge_level: int = 0,
     ) -> str:
         """
         Generate a response using DeepSeek API.
@@ -196,6 +287,11 @@ class Brain:
             rag_facts: Optional facts from LightRAG knowledge base.
             grade: Response depth (0=skip, 1=react, 2=normal, 3=deep).
             avoid_responses: Optional list of recent responses to avoid.
+            situation: One of joke|help|casual|tease|defend — picks which
+                pre-built system prompt to use (see _situation_prompts).
+            grudge_level: For situation="defend" only — >=1 rebuilds a
+                hotter, escalated prompt (repeat offender), computed
+                method-locally so no shared state is mutated.
 
         Returns:
             Generated response text (may contain REACT:/GIPHY:/STICKER: prefixes).
@@ -208,6 +304,23 @@ class Brain:
             # Temperature: lower for deep answers, higher for reactions
             temp_map = {0: 1.0, 1: 1.2, 2: 1.0, 3: 0.8}
             dynamic_temperature = temp_map.get(grade, self.config.deepseek_temperature)
+            if situation == "defend":
+                dynamic_temperature = 1.15
+
+            # Pick the system prompt for this situation. grudge_level > 0
+            # needs a freshly-built escalated prompt (method-local variable —
+            # never cached/mutated on self, since Brain is shared across
+            # concurrently-handled messages).
+            if situation == "defend" and grudge_level > 0:
+                system_prompt = get_system_prompt_for_situation(
+                    self.config.bot_name,
+                    self._available_stickers,
+                    situation="defend",
+                    text_only_mode=self.config.text_only_mode,
+                    grudge_level=grudge_level,
+                )
+            else:
+                system_prompt = self._situation_prompts.get(situation, self._system_prompt)
 
             # Enhance context with rag facts
             enhanced_context = context
@@ -222,7 +335,7 @@ class Brain:
                 )
 
             messages = [
-                {"role": "system", "content": self._system_prompt},
+                {"role": "system", "content": system_prompt},
                 {
                     "role": "user",
                     "content": get_context_prompt(
@@ -240,7 +353,7 @@ class Brain:
             )
 
             answer = response.choices[0].message.content.strip()
-            logger.info(f"Generated response (grade={grade}): {answer[:60]}")
+            logger.info(f"Generated response (grade={grade}, situation={situation}): {answer[:60]}")
             return answer
 
         except Exception as e:

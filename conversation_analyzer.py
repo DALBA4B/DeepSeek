@@ -26,12 +26,15 @@ from typing import List, Optional
 
 import aiohttp
 
-from prompts import get_name_variations
+from prompts import get_name_variations, INSULT_KEYWORDS
 
 logger = logging.getLogger(__name__)
 
 # ── Request token budget for the classifier ──────────────────────────
-_CLASSIFIER_MAX_TOKENS = 200
+_CLASSIFIER_MAX_TOKENS = 220
+
+# ── Valid situation values (unknown/missing → "casual") ──────────────
+_SITUATIONS = {"joke", "help", "casual", "tease", "defend"}
 
 # ── Prompt template ────────────────────────────────────────────────
 _CLASSIFIER_PROMPT = """\
@@ -48,6 +51,7 @@ _CLASSIFIER_PROMPT = """\
   "grade": <0-3>,
   "needs_memory": <true/false>,
   "rag_query": <строка или null>,
+  "situation": "<joke|help|casual|tease|defend>",
   "reason": "<кратко почему>"
 }}
 
@@ -66,6 +70,13 @@ needs_memory — true если:
 rag_query — если needs_memory, краткий поисковый запрос для базы знаний \
 (например "Максим Dota игры"). Если needs_memory=false — null.
 
+situation — в каком стиле отвечать:
+  joke   — человек шутит / мем / абсурд, поддержать веселье
+  help   — реальный вопрос или просьба о помощи, объяснить что-то
+  casual — обычный разговор, мнение, болтовня, поддержка
+  tease  — уместен лёгкий дружеский подкол
+  defend — на {bot_name} наезжают, оскорбляют, провоцируют — агрессия направлена на бота
+
 reason — одно предложение почему такой grade."""
 
 
@@ -80,6 +91,7 @@ class ClassificationResult:
     rag_query: Optional[str]
     reason: str
     from_fallback: bool = False  # True when structured parse failed
+    situation: str = "casual"    # joke | help | casual | tease | defend
 
 
 @dataclass
@@ -141,6 +153,7 @@ class ConversationAnalyzer:
         # even if the LLM (which now also sees {bot_name} in the prompt)
         # disagrees. Belt-and-suspenders against misclassifying direct address.
         directly_addressed = self._is_directly_addressed(message_context)
+        is_attack = self._is_attack_on_bot(message_context)
 
         prompt = self._build_prompt(message_context, recent_messages)
 
@@ -150,6 +163,12 @@ class ConversationAnalyzer:
             if result is not None:
                 if directly_addressed and result.grade < 2:
                     result.grade = 2
+                if is_attack:
+                    # Hard override: a keyword-confirmed insult aimed at the
+                    # bot always gets the defend prompt, even if the (safety
+                    # tuned) LLM softened it to something else.
+                    result.situation = "defend"
+                    result.grade = max(result.grade, 2)
                 return result
         except Exception as e:
             logger.warning(f"Classifier LLM call failed: {e}")
@@ -244,12 +263,17 @@ class ConversationAnalyzer:
 
             reason = str(data.get("reason", ""))[:100]
 
+            situation = str(data.get("situation", "casual")).strip().lower()
+            if situation not in _SITUATIONS:
+                situation = "casual"
+
             return ClassificationResult(
                 grade=grade,
                 needs_memory=needs_memory,
                 rag_query=rag_query,
                 reason=reason,
                 from_fallback=False,
+                situation=situation,
             )
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
             logger.debug(f"Classifier JSON parse failed: {e}")
@@ -266,14 +290,21 @@ class ConversationAnalyzer:
         text_lower = msg.text.lower()
         grade = 0
         needs_memory = False
+        situation = "casual"
 
+        if self._is_attack_on_bot(msg):
+            # No network, but a keyword-confirmed insult still deserves a
+            # real defend reply rather than silence/casual chat.
+            grade = 2
+            situation = "defend"
         # Direct address → always respond
-        if self._is_directly_addressed(msg):
+        elif self._is_directly_addressed(msg):
             grade = 2
             needs_memory = True
         # Question → respond
         elif "?" in msg.text:
             grade = 2 if len(msg.text) > 30 else 1
+            situation = "help"
         # Very short → skip
         elif len(msg.text) < 10:
             grade = 0
@@ -289,6 +320,7 @@ class ConversationAnalyzer:
             rag_query=msg.author if needs_memory else None,
             reason="(fallback heuristic)",
             from_fallback=True,
+            situation=situation,
         )
 
     # ------------------------------------------------------------------ #
@@ -299,3 +331,28 @@ class ConversationAnalyzer:
         """Check if the message directly addresses the bot."""
         text_lower = msg.text.lower()
         return any(variant in text_lower for variant in get_name_variations(msg.bot_name))
+
+    @staticmethod
+    def _is_attack_on_bot(msg: _MessageContext) -> bool:
+        """
+        Directionality + hostility: the message is aimed at the bot AND
+        contains an insult/provocation stem. Used as a hard override on top
+        of the LLM's own "situation" judgement — DeepSeek's safety tuning
+        tends to soften genuine insults, so this keyword floor guarantees a
+        real attack still gets the defend prompt (see PROJECT_ANALYSIS_V2.md
+        Причина 3.3).
+
+        Directionality is satisfied either by an explicit name mention in
+        THIS message, or by the bot having just replied (an ongoing back-
+        and-forth doesn't repeat the bot's name on every line — "дип ты
+        тупой" followed by a bare "дурачек" two seconds later is still
+        aimed at the bot, not a new addressee).
+        """
+        text_lower = msg.text.lower()
+        aimed_at_bot = (
+            ConversationAnalyzer._is_directly_addressed(msg)
+            or msg.bot_responded_recently
+        )
+        if not aimed_at_bot:
+            return False
+        return any(kw in text_lower for kw in INSULT_KEYWORDS)
