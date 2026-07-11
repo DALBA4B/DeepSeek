@@ -6,7 +6,8 @@ Processes and sends responses in different formats: text, reaction, GIF, sticker
 
 import logging
 import random
-from typing import Dict, List, Optional
+from collections import deque
+from typing import Deque, Dict, List, Optional, Tuple
 
 import aiohttp
 from aiohttp import ClientTimeout
@@ -190,6 +191,9 @@ class StickerManager:
         'wtf': ['🤨', '😳', '😲', '🫤'],
     }
 
+    # How many recently-sent stickers to avoid repeating (see get_file_id).
+    RECENT_HISTORY_SIZE = 10
+
     def __init__(self, custom_stickers: Optional[Dict[str, str]] = None):
         """
         Initialize sticker manager.
@@ -198,13 +202,20 @@ class StickerManager:
         if custom_stickers:
             self._stickers.update(custom_stickers)
 
-        # (file_id, emoji) pairs for every sticker in the loaded set.
-        self._all_stickers: List[tuple] = []
+        # (file_id, emoji) pairs across every loaded pack — load_sticker_set
+        # can be called multiple times (multiple packs) and accumulates here.
+        self._all_stickers: List[Tuple[str, str]] = []
+
+        # Most recently sent sticker file_ids, oldest first — excluded from
+        # selection in get_file_id() so the bot doesn't spam the same sticker.
+        self._recently_sent: Deque[str] = deque(maxlen=self.RECENT_HISTORY_SIZE)
 
     async def load_sticker_set(self, bot: Bot, set_name: str) -> None:
         """
-        Load all stickers from a specific sticker set, keeping each
-        sticker's associated emoji so replies can be matched by emotion.
+        Load all stickers from a sticker set, keeping each sticker's
+        associated emoji so replies can be matched by emotion. Can be called
+        multiple times with different pack names — stickers accumulate
+        across packs instead of replacing the previous pack.
 
         Args:
             bot: Telegram Bot instance
@@ -213,34 +224,49 @@ class StickerManager:
         try:
             sticker_set = await bot.get_sticker_set(set_name)
 
-            self._all_stickers = [
+            new_stickers = [
                 (sticker.file_id, sticker.emoji or "") for sticker in sticker_set.stickers
             ]
-            logger.info(f"Loaded {len(self._all_stickers)} stickers from set '{set_name}'")
+            self._all_stickers.extend(new_stickers)
+            logger.info(
+                "Loaded %d stickers from set '%s' (total across all packs: %d)",
+                len(new_stickers), set_name, len(self._all_stickers),
+            )
 
         except Exception as e:
             logger.error(f"Failed to load sticker set '{set_name}': {e}")
 
     def get_file_id(self, emotion: str) -> Optional[str]:
         """
-        Get a sticker matching `emotion`. If a full set is loaded, prefer a
-        sticker whose pack emoji matches the emotion; fall back to any
-        sticker from the set if nothing matches. Otherwise try the manual
-        emotion->file_id mapping.
+        Get a sticker matching `emotion`, avoiding recent repeats. If a full
+        set is loaded, prefer a sticker whose pack emoji matches the emotion;
+        fall back to any sticker if nothing matches. Otherwise try the
+        manual emotion->file_id mapping.
+
+        Recently-sent stickers (see record_sent) are excluded from the
+        candidate pool where possible — but a small pool exhausted by recent
+        history still returns something rather than nothing (repeats are
+        better than no sticker at all).
         """
         if self._all_stickers:
             wanted_emojis = self.EMOTION_EMOJIS.get(emotion.lower().strip(), [])
             matches = [
                 file_id for file_id, emoji in self._all_stickers if emoji in wanted_emojis
             ]
-            if matches:
-                return random.choice(matches)
-            # No sticker in the pack carries that emoji — any sticker beats none.
-            return random.choice([file_id for file_id, _ in self._all_stickers])
+            # No sticker in any loaded pack carries that emoji — any sticker
+            # beats none.
+            pool = matches if matches else [file_id for file_id, _ in self._all_stickers]
+
+            fresh = [file_id for file_id in pool if file_id not in self._recently_sent]
+            return random.choice(fresh if fresh else pool)
 
         # Fallback to manual mapping
         file_id = self._stickers.get(emotion.lower().strip(), '')
         return file_id if file_id else None
+
+    def record_sent(self, file_id: str) -> None:
+        """Note that `file_id` was just sent, so get_file_id() avoids repeating it."""
+        self._recently_sent.append(file_id)
 
 
 class Responder:
@@ -477,6 +503,7 @@ class Responder:
                     chat_id=message.chat_id,
                     sticker=file_id
                 )
+                self._stickers.record_sent(file_id)
                 logger.info(f"Sticker sent for emotion: {emotion}")
                 return True
             except TelegramError as e:

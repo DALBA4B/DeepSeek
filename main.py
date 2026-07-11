@@ -30,6 +30,17 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram.ext._application").setLevel(logging.WARNING)
 
+# Sticker packs the bot picks from (combined). Add more short names here to
+# give the bot a wider variety — find a pack's exact short name (Telegram's
+# in-app display name doesn't always match) with sticker_finder.py.
+STICKER_PACKS = [
+    "userpack7845974_by_stickrubot",
+    "aye3_by_APT_bot",
+    "unwrsa_by_stickrubot",
+    "userpack7251755_by_stickrubot",
+    "kggqqwk_by_stickrubot"
+]
+
 
 def build_rag_client(config: BotConfig) -> Optional[RagClient]:
     """
@@ -486,15 +497,18 @@ class DeepSeekBot:
             self.rag_task.set_bot(bot=app.bot, chat_id=self.config.chat_id)
             logger.info("RAG ingest task bot configured")
 
-        # Load sticker pack (still used by the responder)
-        try:
-            sticker_pack_name = "userpack7845974bystickrubot"
-            logger.info(f"Loading sticker pack '{sticker_pack_name}'...")
-            if hasattr(self.responder, 'sticker_manager'):
-                await self.responder.sticker_manager.load_sticker_set(app.bot, sticker_pack_name)
-                logger.info("Sticker pack loaded successfully")
-        except Exception as e:
-            logger.error(f"Failed to load sticker pack: {e}")
+        # Load sticker packs (still used by the responder). Multiple packs are
+        # supported — load_sticker_set() accumulates across calls instead of
+        # replacing, so the bot picks from all of them combined. Find a pack's
+        # exact name (Telegram short names don't always match what's shown in
+        # the app) with sticker_finder.py.
+        for sticker_pack_name in STICKER_PACKS:
+            try:
+                logger.info(f"Loading sticker pack '{sticker_pack_name}'...")
+                if hasattr(self.responder, 'sticker_manager'):
+                    await self.responder.sticker_manager.load_sticker_set(app.bot, sticker_pack_name)
+            except Exception as e:
+                logger.error(f"Failed to load sticker pack '{sticker_pack_name}': {e}")
 
         logger.info("Message handler registered")
         logger.info("=" * 50)

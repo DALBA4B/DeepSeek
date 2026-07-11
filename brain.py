@@ -140,24 +140,28 @@ def _pick_silent_reaction_emoji(situation: str) -> str:
     return random.choice(candidates)
 
 
-_RANDOM_MEDIA_HINTS = (
-    "можно один раз ответить гифкой (GIPHY:<запрос>), если это в тему",
+_RANDOM_NON_GIF_HINTS = (
     "можно один раз ответить стикером (STICKER:<эмоция>), если это в тему",
     "можно один раз ответить реакцией-эмодзи (REACT:<эмодзи>), если это в тему",
 )
+_RANDOM_GIF_HINT = "можно один раз ответить гифкой (GIPHY:<запрос>), если это в тему"
 
 
-def _build_media_hint(message_text: str, media_probability: float) -> str:
+def _build_media_hint(
+    message_text: str, media_probability: float, gif_probability: float
+) -> str:
     """
     Decide, in CODE (not left to the model's own judgement), whether this
     turn is allowed to use GIPHY:/REACT:/STICKER: instead of plain text.
 
     This is the fix for "гифка/стикер вместо ответа, когда не просили, и
     текст, когда просили" (Проблема №2): an explicit request from the user
-    always wins and is force-instructed; otherwise there's only a small
-    `media_probability` chance of an unprompted media reply. Returns "" when
-    neither applies — the base prompt already tells the model "no format
-    line this turn = plain text", so an empty hint means text.
+    always wins and is force-instructed; otherwise there's a small,
+    independently-tuned chance of an unprompted media reply — `gif_probability`
+    for GIPHY (kept lower: a GIF is a network round-trip that can fail/be
+    slow) and `media_probability` for sticker/reaction. Returns "" when none
+    of these apply — the base prompt already tells the model "no format line
+    this turn = plain text", so an empty hint means text.
     """
     explicit = _detect_media_request(message_text)
     if explicit == "gif":
@@ -165,8 +169,11 @@ def _build_media_hint(message_text: str, media_probability: float) -> str:
     if explicit == "sticker":
         return "пользователь явно просит стикер — ответь строго STICKER:<эмоция>, без текста до/после"
 
-    if random.random() < media_probability:
-        return random.choice(_RANDOM_MEDIA_HINTS)
+    roll = random.random()
+    if roll < gif_probability:
+        return _RANDOM_GIF_HINT
+    if roll < gif_probability + media_probability:
+        return random.choice(_RANDOM_NON_GIF_HINTS)
 
     return ""
 
@@ -469,7 +476,9 @@ class Brain:
             media_hint = ""
             if not self.config.text_only_mode:
                 media_hint = _build_media_hint(
-                    message_text, self.config.media_response_probability
+                    message_text,
+                    self.config.media_response_probability,
+                    self.config.gif_response_probability,
                 )
 
             messages = [

@@ -218,7 +218,8 @@ class BotConfig:
     random_response_probability: float = 0.1
     use_smart_respond: bool = False  # Use AI to decide whether to respond (costs API calls)
     text_only_mode: bool = False  # Only text responses (no stickers, GIFs, reactions)
-    media_response_probability: float = 0.05  # chance of an unprompted GIF/sticker reply
+    media_response_probability: float = 0.05  # chance of an unprompted sticker/reaction reply
+    gif_response_probability: float = 0.015  # chance of an unprompted GIF reply (rarer — network round-trip)
     silent_reaction_probability: float = 0.03  # chance of a reaction-only "ack" instead of full silence on grade 0
     
     # Giphy settings
