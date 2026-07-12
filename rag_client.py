@@ -38,6 +38,7 @@ from typing import Optional
 import aiohttp
 
 logger = logging.getLogger(__name__)
+_rag_debug = logging.getLogger("ragdebug")
 
 # Refresh the token a bit before it actually expires, to avoid edge-case 401s
 _TOKEN_REFRESH_MARGIN_SECONDS = 60
@@ -68,7 +69,7 @@ class RagClient:
         password: str,
         query_mode: str = "mix",
         query_top_k: int = 5,
-        query_timeout: float = 8.0,
+        query_timeout: float = 25.0,
         insert_timeout: float = 15.0,
     ) -> None:
         # Normalize: strip trailing slash, drop accidental /webui suffix
@@ -196,6 +197,10 @@ class RagClient:
                         return await resp.json(content_type=None)
                     except Exception:
                         return {"raw": text}
+        except asyncio.TimeoutError as e:
+            raise RagClientError(
+                f"LightRAG timed out after {timeout:.1f}s on {method} {path}"
+            ) from e
         except aiohttp.ClientError as e:
             raise RagClientError(f"Network error talking to LightRAG: {e}") from e
         except RagClientError:
@@ -241,17 +246,28 @@ class RagClient:
         payload = {
             "query": query,
             "mode": self.query_mode,
-            "only_need_context": False,
+            "only_need_context": True,
             "top_k": self.query_top_k,
         }
+        _rag_debug.info("RAG-DEBUG [lightrag http] POST /query payload=%s", payload)
 
+        t0 = time.monotonic()
         try:
             data = await self._request(
                 "POST", "/query", json=payload, timeout=self.query_timeout
             )
         except RagClientError as e:
+            elapsed_ms = (time.monotonic() - t0) * 1000
             logger.warning(f"LightRAG retrieve failed (query={query!r}): {e}")
+            _rag_debug.info(
+                "RAG-DEBUG [lightrag http] /query failed after %.0fms: %s", elapsed_ms, e
+            )
             return None
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        _rag_debug.info(
+            "RAG-DEBUG [lightrag http] /query responded in %.0fms, raw keys=%s",
+            elapsed_ms, list(data.keys()),
+        )
 
         # LightRAG returns the assembled context in different shapes across
         # versions. Normalize to a single string.
@@ -266,6 +282,7 @@ class RagClient:
         context = str(context).strip()
 
         if not context:
+            _rag_debug.info("RAG-DEBUG [lightrag http] normalized context is empty")
             return None
         return context
 

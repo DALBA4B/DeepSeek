@@ -178,7 +178,7 @@ def load_config() -> BotConfig:
         lightrag_api_password=os.getenv("LIGHTRAG_API_PASSWORD", ""),
         lightrag_query_mode=os.getenv("LIGHTRAG_QUERY_MODE", "mix"),
         lightrag_query_top_k=_get_optional_int("LIGHTRAG_QUERY_TOP_K", 5),
-        lightrag_query_timeout=_get_optional_float("LIGHTRAG_QUERY_TIMEOUT", 8.0),
+        lightrag_query_timeout=_get_optional_float("LIGHTRAG_QUERY_TIMEOUT", 25.0),
         lightrag_insert_timeout=_get_optional_float("LIGHTRAG_INSERT_TIMEOUT", 15.0),
 
         # Nightly ingest settings

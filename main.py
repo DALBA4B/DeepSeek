@@ -8,8 +8,10 @@ generate), and a nightly RagIngestTask feeds the day's chat into LightRAG.
 """
 
 import logging
+import os
 import signal
 import sys
+from logging.handlers import RotatingFileHandler
 from typing import List, Optional
 
 from telegram import Update
@@ -563,10 +565,34 @@ class DeepSeekBot:
 
 
 def setup_logging(config: BotConfig) -> None:
-    """Configure logging based on config settings."""
+    """
+    Configure logging based on config settings.
+
+    Always logs to console. Also logs to bot.log (rotated, UTF-8) when
+    LOG_TO_FILE=true — lets something else tail/Read the file directly
+    without needing to be attached to the process's own stdout.
+    """
+    handlers: List[logging.Handler] = [logging.StreamHandler()]
+    if os.getenv("LOG_TO_FILE", "false").lower() in ("true", "1", "yes"):
+        file_handler = RotatingFileHandler(
+            "bot.log", maxBytes=10 * 1024 * 1024, backupCount=3, encoding="utf-8"
+        )
+        handlers.append(file_handler)
+
     logging.basicConfig(
         format=config.log_format,
-        level=getattr(logging, config.log_level.upper(), logging.INFO)
+        level=getattr(logging, config.log_level.upper(), logging.INFO),
+        handlers=handlers,
+        force=True,
+    )
+
+    # Verbose per-step RAG pipeline tracing (classify/retrieve/prompt/generate
+    # payloads and timings) — off by default, since it dumps full prompts and
+    # facts on every message. Enable with RAG_DEBUG_LOGGING=true when actually
+    # debugging the memory pipeline.
+    rag_debug_enabled = os.getenv("RAG_DEBUG_LOGGING", "false").lower() in ("true", "1", "yes")
+    logging.getLogger("ragdebug").setLevel(
+        logging.INFO if rag_debug_enabled else logging.WARNING
     )
 
 

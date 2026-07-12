@@ -21,6 +21,7 @@ Design principles
 import asyncio
 import json
 import logging
+import time
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -30,6 +31,7 @@ from prompts import get_name_variations, INSULT_KEYWORDS
 from retry import DeepSeekHTTPError, retry_async
 
 logger = logging.getLogger(__name__)
+_rag_debug = logging.getLogger("ragdebug")
 
 # ── Request token budget for the classifier ──────────────────────────
 _CLASSIFIER_MAX_TOKENS = 220
@@ -164,14 +166,24 @@ class ConversationAnalyzer:
         is_attack = self._is_attack_on_bot(message_context)
 
         prompt = self._build_prompt(message_context, recent_messages)
+        _rag_debug.info(
+            "RAG-DEBUG [classifier] prompt sent to DeepSeek (%d chars):\n%s",
+            len(prompt), prompt,
+        )
 
         try:
+            t0 = time.monotonic()
             raw = await retry_async(
                 lambda: self._call_llm(prompt, max_tokens),
                 attempts=self.max_attempts,
                 base_delay=self.retry_base_delay,
                 max_delay=0.8,
                 jitter=0.2,
+            )
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            _rag_debug.info(
+                "RAG-DEBUG [classifier] DeepSeek raw response in %.0fms: %s",
+                elapsed_ms, raw,
             )
             result = self._parse_response(raw)
             if result is not None:
@@ -245,6 +257,14 @@ class ConversationAnalyzer:
                 if resp.status >= 400:
                     raise DeepSeekHTTPError(resp.status, text[:200])
                 data = json.loads(text)
+                usage = data.get("usage") or {}
+                if usage:
+                    _rag_debug.info(
+                        "RAG-DEBUG [classifier] tokens: prompt=%s completion=%s total=%s",
+                        usage.get("prompt_tokens", "?"),
+                        usage.get("completion_tokens", "?"),
+                        usage.get("total_tokens", "?"),
+                    )
                 return data["choices"][0]["message"]["content"]
 
     # ------------------------------------------------------------------ #

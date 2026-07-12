@@ -8,6 +8,7 @@ Integrates with LightRAG for long-term knowledge about chat participants.
 import asyncio
 import logging
 import random
+import time
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from typing import Deque, Dict, Hashable, List, Optional, Tuple
@@ -30,6 +31,9 @@ from conversation_analyzer import ConversationAnalyzer, ClassificationResult, _M
 from retry import retry_sync
 
 logger = logging.getLogger(__name__)
+# Verbose per-step RAG pipeline tracing (classify/retrieve/prompt/generate).
+# Silent by default — enabled via RAG_DEBUG_LOGGING (see main.setup_logging).
+_rag_debug = logging.getLogger("ragdebug")
 
 # Situations the classifier can emit — see conversation_analyzer._SITUATIONS.
 _SITUATIONS = ("joke", "help", "casual", "tease", "defend")
@@ -154,11 +158,15 @@ _RANDOM_NON_GIF_HINTS = (
     "можно один раз ответить реакцией-эмодзи (REACT:<эмодзи>), если это в тему",
 )
 _RANDOM_GIF_HINT = "можно один раз ответить гифкой (GIPHY:<запрос>), если это в тему"
+_NO_MEDIA_HINT = (
+    "в этот раз — только обычный текст, без GIPHY:/REACT:/STICKER:, "
+    "даже если тема шутливая"
+)
 
 
 def _build_media_hint(
     message_text: str, media_probability: float, gif_probability: float
-) -> str:
+) -> Tuple[str, bool]:
     """
     Decide, in CODE (not left to the model's own judgement), whether this
     turn is allowed to use GIPHY:/REACT:/STICKER: instead of plain text.
@@ -168,23 +176,39 @@ def _build_media_hint(
     always wins and is force-instructed; otherwise there's a small,
     independently-tuned chance of an unprompted media reply — `gif_probability`
     for GIPHY (kept lower: a GIF is a network round-trip that can fail/be
-    slow) and `media_probability` for sticker/reaction. Returns "" when none
-    of these apply — the base prompt already tells the model "no format line
-    this turn = plain text", so an empty hint means text.
+    slow) and `media_probability` for sticker/reaction.
+
+    Returns (hint, allowed). When not allowed, the hint is now an explicit
+    negative instruction placed right next to the message (not just relying
+    on the general rule stated once at the top of the system prompt, which
+    the model can drift away from) — see the caller for the code-level
+    guard that also rejects a media reply if the model ignores this anyway.
     """
     explicit = _detect_media_request(message_text)
     if explicit == "gif":
-        return "пользователь явно просит гифку — ответь строго GIPHY:<короткий запрос на английском>, без текста до/после"
+        return (
+            "пользователь явно просит гифку — ответь строго GIPHY:<короткий запрос на английском>, без текста до/после",
+            True,
+        )
     if explicit == "sticker":
-        return "пользователь явно просит стикер — ответь строго STICKER:<эмоция>, без текста до/после"
+        return (
+            "пользователь явно просит стикер — ответь строго STICKER:<эмоция>, без текста до/после",
+            True,
+        )
 
     roll = random.random()
     if roll < gif_probability:
-        return _RANDOM_GIF_HINT
+        return (_RANDOM_GIF_HINT, True)
     if roll < gif_probability + media_probability:
-        return random.choice(_RANDOM_NON_GIF_HINTS)
+        return (random.choice(_RANDOM_NON_GIF_HINTS), True)
 
-    return ""
+    return (_NO_MEDIA_HINT, False)
+
+
+def _is_media_response(text: str) -> bool:
+    """True if the model's answer used GIPHY:/REACT:/STICKER: instead of plain text."""
+    prefix = text.strip().upper()
+    return prefix.startswith(("GIPHY:", "REACT:", "STICKER:"))
 
 
 class RequestClassifier:
@@ -338,7 +362,13 @@ class Brain:
             bot_name=self.config.bot_name,
             bot_responded_recently=bot_responded_recently,
         )
+        _rag_debug.info(
+            "RAG-DEBUG [1/4 classify] message=%r author=%r reply_to=%r bot_responded_recently=%s",
+            message_text, author, reply_text, bot_responded_recently,
+        )
+        t0 = time.monotonic()
         result = await self._analyzer.classify(msg_ctx, recent_messages)
+        classify_ms = (time.monotonic() - t0) * 1000
         self._rag_usage.record_classification(result.needs_memory)
 
         logger.info(
@@ -349,6 +379,11 @@ class Brain:
             result.situation,
             result.reason,
             result.from_fallback,
+        )
+        _rag_debug.info(
+            "RAG-DEBUG [1/4 classify] done in %.0fms -> needs_memory=%s rag_query=%r "
+            "(решение почему: %r, from_fallback=%s)",
+            classify_ms, result.needs_memory, result.rag_query, result.reason, result.from_fallback,
         )
 
         # Step 2: Skip if grade == 0 — but occasionally just react instead of
@@ -385,12 +420,34 @@ class Brain:
         # Step 3: Fetch facts from LightRAG if needed
         rag_facts = ""
         if result.needs_memory and self._rag_client and result.rag_query:
+            _rag_debug.info(
+                "RAG-DEBUG [2/4 retrieve] querying LightRAG: query=%r mode=%s top_k=%s",
+                result.rag_query, self._rag_client.query_mode, self._rag_client.query_top_k,
+            )
+            t1 = time.monotonic()
             rag_facts = await self._rag_client.retrieve(result.rag_query)
+            retrieve_ms = (time.monotonic() - t1) * 1000
             self._rag_usage.record_retrieval(bool(rag_facts))
             if rag_facts:
-                logger.info("LightRAG facts retrieved (%d chars)", len(rag_facts))
+                logger.info(
+                    "LightRAG facts retrieved (%d chars)", len(rag_facts)
+                )
+                _rag_debug.info(
+                    "RAG-DEBUG [2/4 retrieve] done in %.0fms -> %d chars returned:\n%s",
+                    retrieve_ms, len(rag_facts), rag_facts,
+                )
             else:
                 logger.debug("LightRAG returned no facts for query: %r", result.rag_query)
+                _rag_debug.info(
+                    "RAG-DEBUG [2/4 retrieve] done in %.0fms -> ничего не найдено (или LightRAG недоступен)",
+                    retrieve_ms,
+                )
+        elif result.needs_memory:
+            _rag_debug.info(
+                "RAG-DEBUG [2/4 retrieve] skipped: needs_memory=True но rag_client=%s rag_query=%r "
+                "(нет клиента или классификатор не дал запрос)",
+                bool(self._rag_client), result.rag_query,
+            )
 
         # Step 4: Generate response with grade-aware parameters.
         # generate_response() uses the synchronous OpenAI SDK, so run it in a
@@ -483,23 +540,38 @@ class Brain:
             # it this turn. text_only_mode skips this entirely (would be
             # stripped by ResponseParser anyway).
             media_hint = ""
+            media_allowed = False
             if not self.config.text_only_mode:
-                media_hint = _build_media_hint(
+                media_hint, media_allowed = _build_media_hint(
                     message_text,
                     self.config.media_response_probability,
                     self.config.gif_response_probability,
                 )
 
+            user_prompt = get_context_prompt(
+                enhanced_context, message_text, rag_facts, media_hint
+            )
             messages = [
                 {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": get_context_prompt(
-                        enhanced_context, message_text, rag_facts, media_hint
-                    ),
-                },
+                {"role": "user", "content": user_prompt},
             ]
 
+            _rag_debug.info(
+                "RAG-DEBUG [3/4 prompt] situation=%s grade=%d grudge_level=%d "
+                "rag_facts_included=%s media_hint=%r max_tokens=%d temperature=%.2f",
+                situation, grade, grudge_level, bool(rag_facts), media_hint,
+                dynamic_max_tokens, dynamic_temperature,
+            )
+            _rag_debug.info(
+                "RAG-DEBUG [3/4 prompt] system_prompt (%d chars):\n%s",
+                len(system_prompt), system_prompt,
+            )
+            _rag_debug.info(
+                "RAG-DEBUG [3/4 prompt] user_prompt (%d chars):\n%s",
+                len(user_prompt), user_prompt,
+            )
+
+            t2 = time.monotonic()
             response = retry_sync(
                 lambda: self.client.chat.completions.create(
                     model=self.config.deepseek_model,
@@ -513,8 +585,72 @@ class Brain:
                 max_delay=4.0,
                 jitter=0.3,
             )
+            generate_ms = (time.monotonic() - t2) * 1000
 
             answer = response.choices[0].message.content.strip()
+            usage = getattr(response, "usage", None)
+            if usage is not None:
+                _rag_debug.info(
+                    "RAG-DEBUG [4/4 generate] done in %.0fms -> tokens: prompt=%s completion=%s total=%s",
+                    generate_ms,
+                    getattr(usage, "prompt_tokens", "?"),
+                    getattr(usage, "completion_tokens", "?"),
+                    getattr(usage, "total_tokens", "?"),
+                )
+            else:
+                _rag_debug.info(
+                    "RAG-DEBUG [4/4 generate] done in %.0fms -> tokens: (usage не вернулся)",
+                    generate_ms,
+                )
+            # Code-level guard (Проблема №2, part 2): the hint above is just an
+            # instruction — the model can still ignore it. If it used
+            # GIPHY:/REACT:/STICKER: on a turn that wasn't allowed, don't ship
+            # that to the user; ask once more for plain text, and fall back to
+            # silence (None) rather than send a broken/mismatched reply if it
+            # still refuses.
+            if not media_allowed and _is_media_response(answer):
+                logger.warning(
+                    "Model used %s despite media not being allowed this turn "
+                    "(message=%r) — retrying as text-only",
+                    answer.split(":", 1)[0], message_text,
+                )
+                retry_messages = messages + [
+                    {"role": "assistant", "content": answer},
+                    {
+                        "role": "user",
+                        "content": (
+                            "Это нельзя было отвечать гифкой/стикером/реакцией — "
+                            "ответь на исходный вопрос обычным текстом."
+                        ),
+                    },
+                ]
+                try:
+                    retry_response = retry_sync(
+                        lambda: self.client.chat.completions.create(
+                            model=self.config.deepseek_model,
+                            messages=retry_messages,
+                            max_tokens=dynamic_max_tokens,
+                            temperature=dynamic_temperature,
+                            extra_body={"thinking": {"type": "disabled"}},
+                        ),
+                        attempts=self.config.deepseek_max_attempts,
+                        base_delay=self.config.deepseek_retry_base_delay,
+                        max_delay=4.0,
+                        jitter=0.3,
+                    )
+                    retry_answer = retry_response.choices[0].message.content.strip()
+                except Exception as e:
+                    logger.error(f"Retry after blocked media response failed: {e}")
+                    return None
+
+                if _is_media_response(retry_answer):
+                    logger.warning(
+                        "Retry still returned %s — staying silent this turn",
+                        retry_answer.split(":", 1)[0],
+                    )
+                    return None
+                answer = retry_answer
+
             logger.info(f"Generated response (grade={grade}, situation={situation}): {answer[:60]}")
             return answer
 
