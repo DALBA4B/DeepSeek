@@ -412,36 +412,6 @@ class DeepSeekBot:
             text=f"📊 Что я знаю про {target}:\n\n{summary}",
         )
 
-    async def _cmd_ragclean(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """
-        Handle /ragclean: WIPE all LightRAG storage. Dangerous — requires a
-        second confirmation argument ("confirm") so it can't go off by accident.
-        """
-        if not update.effective_chat:
-            return
-        chat_id = update.effective_chat.id
-
-        if self.rag_client is None:
-            await context.bot.send_message(chat_id=chat_id, text="ℹ️ LightRAG не настроен")
-            return
-
-        confirmed = context.args and context.args[0].lower() == "confirm"
-        if not confirmed:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=(
-                    "⚠️ Это УДАЛИТ ВСЮ базу знаний LightRAG (граф + векторы + raw text).\n"
-                    "Для подтверждения отправь: /ragclean confirm"
-                ),
-            )
-            return
-
-        ok = await self.rag_client.clear()
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="✅ База знаний очищена" if ok else "❌ Не удалось очистить базу",
-        )
-
     async def _cmd_mood(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """
         Handle /mood: show the bot's current grudge level towards a person
@@ -548,7 +518,6 @@ class DeepSeekBot:
             self._app.add_handler(CommandHandler("ragstats", self._cmd_ragstats))
             self._app.add_handler(CommandHandler("ragnow", self._cmd_ragnow))
             self._app.add_handler(CommandHandler("profile", self._cmd_profile))
-            self._app.add_handler(CommandHandler("ragclean", self._cmd_ragclean))
             self._app.add_handler(CommandHandler("mood", self._cmd_mood))
 
             self._app.post_init = self._startup_handler

@@ -321,14 +321,3 @@ class RagClient:
             or (data.get("data", {}) or {}).get("id")
         )
 
-    async def clear(self) -> bool:
-        """
-        Clear all LightRAG storage (graph + vectors + raw text).
-        DANGEROUS — only for debugging / full resets. Used by /ragclean.
-        """
-        try:
-            await self._request("POST", "/clear", json={}, timeout=20.0)
-            return True
-        except RagClientError as e:
-            logger.warning(f"LightRAG clear failed: {e}")
-            return False
