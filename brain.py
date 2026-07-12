@@ -121,23 +121,32 @@ def _detect_media_request(message_text: str) -> Optional[str]:
 
 
 # Prefix for a "react instead of full silence" result from analyze_and_respond
-# (see _pick_silent_reaction_emoji) — main.py checks for this specifically and
-# routes it to Responder.send_silent_reaction() instead of the normal
-# text/GIPHY/STICKER/REACT pipeline (which has its own reaction-vs-text
+# (see _silent_reaction_pool) — main.py checks for this specifically and
+# routes it to Responder.send_silent_reaction_from_pool() instead of the
+# normal text/GIPHY/STICKER/REACT pipeline (which has its own reaction-vs-text
 # fallback heuristic that would defeat the point of "don't butt in").
+#
+# The full candidate pool (comma-joined) is sent, not one pre-picked emoji —
+# Responder makes the final choice there, since it's the one place that
+# actually knows what was recently sent and can avoid repeating it (see
+# Responder._reactions / RecentReactionTracker).
 SILENT_REACT_PREFIX = "SILENT_REACT:"
 
+
+# Only emoji from prompts.ALLOWED_REACTION_EMOJIS — Telegram rejects
+# anything else with REACTION_INVALID (see prompts.py for details). Notably
+# 😂 and 💀 are NOT in Telegram's set (🤣 is the closest valid equivalent).
 _SILENT_REACTION_EMOJIS = {
-    "joke": ["😂", "💀", "🔥"],
-    "tease": ["😏", "👀"],
+    "joke": ["🤣", "😁", "🎉", "😱"],
+    "tease": ["👀", "🤨", "😈"],
+    "casual": ["👍", "🫡", "🤝"],
 }
-_DEFAULT_SILENT_REACTION_EMOJIS = ["👍", "😂"]
+_DEFAULT_SILENT_REACTION_EMOJIS = ["👍", "🤣", "🔥"]
 
 
-def _pick_silent_reaction_emoji(situation: str) -> str:
-    """Pick a reaction emoji matching the situation, for the grade==0 ack."""
-    candidates = _SILENT_REACTION_EMOJIS.get(situation, _DEFAULT_SILENT_REACTION_EMOJIS)
-    return random.choice(candidates)
+def _silent_reaction_pool(situation: str) -> List[str]:
+    """Candidate reaction emoji matching the situation, for the grade==0 ack."""
+    return _SILENT_REACTION_EMOJIS.get(situation, _DEFAULT_SILENT_REACTION_EMOJIS)
 
 
 _RANDOM_NON_GIF_HINTS = (
@@ -351,12 +360,12 @@ class Brain:
                 not self.config.text_only_mode
                 and random.random() < self.config.silent_reaction_probability
             ):
-                emoji = _pick_silent_reaction_emoji(result.situation)
+                pool = _silent_reaction_pool(result.situation)
                 logger.info(
-                    "Silent reaction instead of full silence: %s (situation=%s)",
-                    emoji, result.situation,
+                    "Silent reaction instead of full silence: pool=%s (situation=%s)",
+                    pool, result.situation,
                 )
-                return f"{SILENT_REACT_PREFIX}{emoji}"
+                return f"{SILENT_REACT_PREFIX}{','.join(pool)}"
             return None
 
         # Step 2b: Grudge escalation for "defend" situations. We trust the

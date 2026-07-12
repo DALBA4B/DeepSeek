@@ -154,6 +154,7 @@ def _response_formats_block(available_stickers: List[str], text_only_mode: bool)
 Отвечай ТОЛЬКО текстом. Просто пишешь. Короткий или длинный — зависит от ситуации.
 Никаких специальных префиксов, тегов или форматов. Только текст."""
     else:
+        allowed_reactions_str = " ".join(ALLOWED_REACTION_EMOJIS)
         response_formats_block = f"""# ФОРМАТЫ ОТВЕТА
 
 Выбираешь ОДИН формат. Не смешивай.
@@ -172,10 +173,13 @@ def _response_formats_block(available_stickers: List[str], text_only_mode: bool)
 - "скинь что-нибудь смешное" → GIPHY:random funny
 
 ## REACT:<эмодзи>
-Просто эмодзи как реакция на сообщение.
+Реакция на сообщение. Telegram принимает реакции ТОЛЬКО из своего
+фиксированного набора — используй эмодзи СТРОГО из этого списка, никакие
+другие не сработают:
+{allowed_reactions_str}
 
 Примеры:
-- Кто-то написал что-то смешное → REACT:💀
+- Кто-то написал что-то смешное → REACT:🤣
 - Ироничное одобрение → REACT:👍
 
 ## STICKER:<эмоция>
@@ -526,6 +530,25 @@ GIF_REQUEST_KEYWORDS: List[str] = [
 ]
 STICKER_REQUEST_KEYWORDS: List[str] = [
     "стикер", "стикр", "наклейк",
+]
+
+
+# Telegram's message-reaction API only accepts a fixed, curated set of emoji
+# for ReactionTypeEmoji — anything outside it fails with REACTION_INVALID.
+# The model previously picked REACT:<эмодзи> completely freely (e.g. 💀, 😂),
+# which aren't in this set, so those reactions silently failed and fell back
+# to text. This is the single source of truth: used both to tell the model
+# what it may pick from (see _response_formats_block) and to validate/guard
+# before ever attempting set_reaction (see responder.is_allowed_reaction).
+ALLOWED_REACTION_EMOJIS: List[str] = [
+    "👍", "👎", "❤", "🔥", "🥰", "👏", "😁", "🤔", "🤯", "😱",
+    "🤬", "😢", "🎉", "🤩", "🙏", "👌", "🕊", "🤡", "🥱", "🥴",
+    "😍", "🐳", "❤‍🔥", "🌚", "🌭", "💯", "🤣", "⚡", "🍌", "🏆",
+    "💔", "🤨", "😐", "🍓", "🍾", "💋", "🖕", "😈", "😴", "😭",
+    "🤓", "👻", "👨‍💻", "👀", "🎃", "🙈", "😇", "😨", "🤝", "✍",
+    "🤗", "🫡", "🎅", "🎄", "☃", "💅", "🤪", "🗿", "🆒", "💘",
+    "🙉", "🦄", "😘", "💊", "🙊", "😎", "👾", "🤷‍♂", "🤷", "🤷‍♀",
+    "😡", "💩",
 ]
 
 

@@ -230,8 +230,8 @@ class DeepSeekBot:
             # bypasses the normal text/GIPHY/STICKER/REACT pipeline entirely,
             # no message history tracking, since this isn't really a "reply".
             if response.startswith(SILENT_REACT_PREFIX):
-                emoji = response[len(SILENT_REACT_PREFIX):]
-                await self.responder.send_silent_reaction(message, emoji)
+                candidates = response[len(SILENT_REACT_PREFIX):].split(",")
+                await self.responder.send_silent_reaction_from_pool(message, candidates)
                 return
 
             logger.info(f"Generated response: {response[:50]}")

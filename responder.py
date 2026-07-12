@@ -15,8 +15,14 @@ from telegram import Bot, Message, ReactionTypeEmoji
 from telegram.error import TelegramError
 
 from models import BotConfig, ParsedResponse, ResponseType
+from prompts import ALLOWED_REACTION_EMOJIS
 
 logger = logging.getLogger(__name__)
+
+# Fast membership check — see prompts.ALLOWED_REACTION_EMOJIS for why this
+# whitelist exists (Telegram rejects anything outside its own reaction set
+# with REACTION_INVALID).
+_ALLOWED_REACTIONS = frozenset(ALLOWED_REACTION_EMOJIS)
 
 
 # Alternative queries for GIF search retry (increases success rate from ~70% to ~85%)
@@ -269,6 +275,46 @@ class StickerManager:
         self._recently_sent.append(file_id)
 
 
+class RecentReactionTracker:
+    """
+    Minimal repeat guard for reactions: blocks the SAME emoji from being used
+    a 5th time in a row, without otherwise interfering (occasional repeats —
+    e.g. 👍 a couple messages apart — are normal chat behavior; only a long
+    identical streak looks robotic).
+
+    Process-local, in-RAM — same tradeoff as GrudgeTracker/StickerManager's
+    recent-history: this is a light UX guard, not data worth persisting.
+    Global across chats (matches the rest of the codebase's single-chat
+    assumption — see PROJECT_ANALYSIS_V2.md "Баг №7").
+    """
+
+    def __init__(self, max_streak: int = 4):
+        self._max_streak = max_streak
+        self._last_emoji: Optional[str] = None
+        self._streak = 0
+
+    def should_avoid(self, emoji: str) -> bool:
+        """True if using `emoji` again would extend an already-maxed streak."""
+        return emoji == self._last_emoji and self._streak >= self._max_streak
+
+    def record(self, emoji: str) -> None:
+        """Call once per reaction actually sent/set."""
+        if emoji == self._last_emoji:
+            self._streak += 1
+        else:
+            self._last_emoji = emoji
+            self._streak = 1
+
+    def pick_non_repeating(self, candidates: List[str]) -> str:
+        """
+        Pick a random emoji from `candidates`, preferring ones that wouldn't
+        extend a maxed-out streak. Falls back to a repeat if every candidate
+        would (better a repeat than nothing / no reaction at all).
+        """
+        fresh = [c for c in candidates if not self.should_avoid(c)]
+        return random.choice(fresh if fresh else candidates)
+
+
 class Responder:
     """
     Handles sending different types of responses to Telegram.
@@ -296,6 +342,7 @@ class Responder:
         self.config = config
         self._giphy = giphy_client or GiphyClient(config)
         self._stickers = sticker_manager or StickerManager()
+        self._reactions = RecentReactionTracker()
         logger.info("Responder initialized")
 
     async def send_response(
@@ -367,7 +414,7 @@ class Responder:
             True if sent successfully
         """
         user_text = (message.text or "").lower()
-        
+
         # Determine intent
         wants_reaction = any(kw in user_text for kw in self.REACTION_KEYWORDS)
         wants_text = any(kw in user_text for kw in self.TEXT_KEYWORDS)
@@ -381,12 +428,28 @@ class Responder:
             # Ambiguous - use 50/50 chance
             use_reaction = random.choice([True, False])
 
+        # Minimal anti-spam guard: don't let the SAME emoji fire a 5th time
+        # in a row (the model picks freely and has no memory of its own).
+        # An explicit "поставь реакцию" request still wins — repeats there
+        # are the user's call, not ours to second-guess.
+        if use_reaction and not wants_reaction and self._reactions.should_avoid(emoji):
+            use_reaction = False
+
+        # The model is told to only use ALLOWED_REACTION_EMOJIS, but if it
+        # picks something outside that set anyway, skip the doomed API call
+        # entirely (Telegram would reject it with REACTION_INVALID) and go
+        # straight to text.
+        if use_reaction and emoji not in _ALLOWED_REACTIONS:
+            logger.info(f"'{emoji}' isn't a valid Telegram reaction, sending as text instead")
+            use_reaction = False
+
         if use_reaction:
             try:
                 await message.set_reaction(
                     reaction=[ReactionTypeEmoji(emoji=emoji)],
                     is_big=False
                 )
+                self._reactions.record(emoji)
                 logger.info(f"Reaction set: {emoji}")
                 return True
             except Exception as e:
@@ -412,16 +475,39 @@ class Responder:
         Returns:
             True if the reaction was set successfully
         """
+        if emoji not in _ALLOWED_REACTIONS:
+            logger.warning(f"'{emoji}' isn't a valid Telegram reaction, staying silent")
+            return False
+
         try:
             await message.set_reaction(
                 reaction=[ReactionTypeEmoji(emoji=emoji)],
                 is_big=False,
             )
+            self._reactions.record(emoji)
             logger.info(f"Silent reaction set: {emoji}")
             return True
         except Exception as e:
             logger.warning(f"Silent reaction failed, staying silent: {e}")
             return False
+
+    async def send_silent_reaction_from_pool(self, message: Message, candidates: List[str]) -> bool:
+        """
+        Like send_silent_reaction(), but picks the actual emoji here from a
+        pool of situation-appropriate candidates (see brain._silent_reaction_pool),
+        avoiding one that's already on a maxed-out repeat streak.
+
+        Args:
+            message: Message to react to
+            candidates: Candidate emoji, any of which fits the situation
+
+        Returns:
+            True if the reaction was set successfully
+        """
+        if not candidates:
+            return False
+        emoji = self._reactions.pick_non_repeating(candidates)
+        return await self.send_silent_reaction(message, emoji)
 
     async def _send_gif(self, message: Message, search_query: str, bot: Bot) -> bool:
         """
