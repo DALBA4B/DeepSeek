@@ -172,7 +172,7 @@ class RagIngestor:
           * the current block already has `max_per_block` messages.
 
         Each block is rendered as:
-            [14:30-14:42]
+            [2026-07-11 14:30-14:42]
             Вася: я люблю киев
             Петя (reply на «я люблю киев»): согласен
             Максим: +
@@ -227,7 +227,7 @@ class RagIngestor:
         """
         start = block[0].timestamp
         end = block[-1].timestamp
-        header = f"[{start.strftime('%H:%M')}-{end.strftime('%H:%M')}]"
+        header = f"[{start.strftime('%Y-%m-%d %H:%M')}-{end.strftime('%H:%M')}]"
         lines = [header]
         for msg in block:
             quote = (msg.reply_to_text or "").strip().replace("\n", " ")
@@ -247,10 +247,10 @@ class RagIngestor:
         Run the full nightly ingest: collect → group → insert as ONE document.
 
         Time-blocks (see group_into_blocks) stay as visual sections inside
-        that single document — each keeps its own [HH:MM-HH:MM] header and
-        reply context — but are no longer split into separate LightRAG
-        documents. LightRAG already chunks a document internally (its own
-        "Chunks" column); splitting per-block ourselves on top of that just
+        that single document — each keeps its own [YYYY-MM-DD HH:MM-HH:MM]
+        header and reply context — but are no longer split into separate
+        LightRAG documents. LightRAG already chunks a document internally (its
+        own "Chunks" column); splitting per-block ourselves on top of that just
         fragmented one day's chat into many tiny unrelated documents for no
         benefit, and made entity extraction see less context at once.
 
