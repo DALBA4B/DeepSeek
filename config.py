@@ -150,6 +150,7 @@ def load_config() -> BotConfig:
         deepseek_timeout=_get_optional_float("DEEPSEEK_TIMEOUT", 30.0),
         deepseek_max_attempts=_get_optional_int("DEEPSEEK_MAX_ATTEMPTS", 3),
         deepseek_retry_base_delay=_get_optional_float("DEEPSEEK_RETRY_BASE_DELAY", 0.5),
+        classifier_model=os.getenv("CLASSIFIER_MODEL", "deepseek-v4-flash"),
         classifier_max_attempts=_get_optional_int("CLASSIFIER_MAX_ATTEMPTS", 2),
         classifier_retry_base_delay=_get_optional_float("CLASSIFIER_RETRY_BASE_DELAY", 0.4),
 

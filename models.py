@@ -206,11 +206,12 @@ class BotConfig:
     
     # DeepSeek settings
     deepseek_base_url: str = "https://api.deepseek.com"
-    deepseek_model: str = "deepseek-chat"
+    deepseek_model: str = "deepseek-v4-flash"
     deepseek_temperature: float = 1.0
     deepseek_timeout: float = 30.0          # per-attempt request timeout
     deepseek_max_attempts: int = 3          # main answer generation
     deepseek_retry_base_delay: float = 0.5
+    classifier_model: str = "deepseek-v4-flash"  # fast model, runs on every message
     classifier_max_attempts: int = 2        # fast classifier (every message)
     classifier_retry_base_delay: float = 0.4
 

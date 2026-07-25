@@ -79,3 +79,8 @@ dmypy.json
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Telegram history exports (personal chat data — never commit)
+[0-9][0-9].[0-9][0-9].[0-9][0-9][0-9][0-9]-*.json
+result.json
+import_progress.json

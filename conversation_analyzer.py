@@ -12,7 +12,7 @@ unified DeepSeek call that returns:
 Design principles
 ----------------
 * ONE DeepSeek call replaces both should_respond + memory decision.
-* Uses the FAST model (deepseek-chat), not the thinking one — must be instant.
+* Uses the FAST model (deepseek-v4-flash), not the thinking one — must be instant.
 * Structured JSON output (DeepSeek supports response_format=json).
 * On any failure → safe fallback via lightweight heuristics (bot never blocks).
 * Fully async (aiohttp) so the event loop is never blocked.
@@ -115,7 +115,7 @@ class ConversationAnalyzer:
     Attributes:
         api_key:     DeepSeek API key
         base_url:    DeepSeek API base URL
-        model:       Fast model name (e.g. deepseek-chat)
+        model:       Fast model name (e.g. deepseek-v4-flash)
         temperature:  Low for deterministic classification
     """
 
@@ -123,7 +123,7 @@ class ConversationAnalyzer:
         self,
         api_key: str,
         base_url: str = "https://api.deepseek.com",
-        model: str = "deepseek-chat",
+        model: str = "deepseek-v4-flash",
         temperature: float = 0.3,
         max_attempts: int = 2,
         retry_base_delay: float = 0.4,

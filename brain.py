@@ -276,7 +276,7 @@ class Brain:
         self._analyzer = ConversationAnalyzer(
             api_key=config.deepseek_api_key,
             base_url=config.deepseek_base_url,
-            model="deepseek-chat",  # fast model for classification
+            model=config.classifier_model,  # fast model for classification
             temperature=0.3,
             max_attempts=config.classifier_max_attempts,
             retry_base_delay=config.classifier_retry_base_delay,

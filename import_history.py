@@ -24,6 +24,8 @@ Design (matches the discussion / PHASE plans)
   so feeding time in order helps "happened before/after" relations.
 * Sequential inserts with a small retry/backoff — a single flaky night must
   not abort the whole backfill.
+* Long pasted blobs are truncated (--max-msg-chars) so copied prompts/articles
+  don't end up retrieved as "facts about people".
 * Resumable: every successfully inserted day is recorded in a progress file
   (default import_progress.json). Re-running skips days already done, so you
   can stop/restart freely and go month by month.
@@ -79,6 +81,26 @@ _PROGRESS_FILE_DEFAULT = "import_progress.json"
 _INSERT_MAX_ATTEMPTS = 3
 _INSERT_RETRY_BASE_DELAY = 2.0  # seconds; backfill is not latency-sensitive
 
+# Long pasted blobs (jailbreak prompts, copied articles, code dumps) are a
+# problem for a *chat* knowledge base: LightRAG keeps raw chunks alongside the
+# extracted graph, so a 2686-char pasted prompt gets retrieved later and served
+# to the bot as a "fact about a person". In the real export these blobs were
+# 52% of all text while the median message was 16 chars. Truncating keeps the
+# useful signal ("Кирилл pasted a jailbreak prompt") and drops the noise.
+_MAX_MSG_CHARS_DEFAULT = 500
+_TRUNCATION_MARKER = " […обрезано]"
+
+# Telegram records the bot's messages under its @username display name
+# ("DeepSeek"), but the live bot introduces itself in prompts/ingest as
+# BOT_NAME ("Дип Сик"). Left as-is, LightRAG would build two separate entities
+# for the same actor and split every fact about the bot between them. Map the
+# export spelling(s) onto the configured name at parse time.
+_SENDER_ALIASES = {
+    "DeepSeek": None,      # None = replace with config.bot_name
+    "Deep Seek": None,
+    "deepseek": None,
+}
+
 
 # ---------------------------------------------------------------------------
 # Telegram JSON export parsing
@@ -114,7 +136,23 @@ def _parse_from_id(raw) -> int:
     return int(digits) if digits else 0
 
 
-def parse_export(path: str) -> List[ChatMessage]:
+def _resolve_sender(raw_name: str, bot_name: Optional[str]) -> str:
+    """
+    Normalise a sender name from the export.
+
+    The only rewrite today is the bot's own display name -> BOT_NAME, so the
+    knowledge graph has one bot entity instead of two (see _SENDER_ALIASES).
+    """
+    if raw_name in _SENDER_ALIASES and bot_name:
+        return _SENDER_ALIASES[raw_name] or bot_name
+    return raw_name
+
+
+def parse_export(
+    path: str,
+    max_msg_chars: int = _MAX_MSG_CHARS_DEFAULT,
+    bot_name: Optional[str] = None,
+) -> List[ChatMessage]:
     """
     Parse a Telegram Desktop JSON export into ChatMessage objects.
 
@@ -122,6 +160,9 @@ def parse_export(path: str) -> List[ChatMessage]:
     * Resolves reply_to_message_id to the replied-to text via an id->text map,
       so RagIngestor can inline reply context exactly like the live path.
     * Timestamps come from `date` (ISO local time in the export).
+    * Truncates messages longer than `max_msg_chars` (0 = keep everything) —
+      see _MAX_MSG_CHARS_DEFAULT for why.
+    * Rewrites the bot's export name to `bot_name` (see _SENDER_ALIASES).
 
     Returns messages in file order (Telegram exports are already chronological).
     """
@@ -144,6 +185,9 @@ def parse_export(path: str) -> List[ChatMessage]:
     messages: List[ChatMessage] = []
     skipped_service = 0
     skipped_empty = 0
+    truncated = 0
+    chars_dropped = 0
+    renamed = 0
 
     for m in raw_messages:
         if m.get("type") != "message":
@@ -154,6 +198,11 @@ def parse_export(path: str) -> List[ChatMessage]:
         if not text:
             skipped_empty += 1
             continue
+
+        if max_msg_chars and len(text) > max_msg_chars:
+            chars_dropped += len(text) - max_msg_chars
+            truncated += 1
+            text = text[:max_msg_chars].rstrip() + _TRUNCATION_MARKER
 
         date_str = m.get("date")
         try:
@@ -167,10 +216,15 @@ def parse_export(path: str) -> List[ChatMessage]:
         if reply_text:
             reply_text = reply_text.strip() or None
 
+        raw_sender = str(m.get("from") or "Unknown")
+        sender = _resolve_sender(raw_sender, bot_name)
+        if sender != raw_sender:
+            renamed += 1
+
         messages.append(
             ChatMessage(
                 user_id=_parse_from_id(m.get("from_id")),
-                username=str(m.get("from") or "Unknown"),
+                username=sender,
                 text=text,
                 message_id=m.get("id", 0) if isinstance(m.get("id"), int) else 0,
                 timestamp=ts,
@@ -182,6 +236,13 @@ def parse_export(path: str) -> List[ChatMessage]:
         "Parsed %d messages (skipped %d service, %d empty/undated)",
         len(messages), skipped_service, skipped_empty,
     )
+    if truncated:
+        logger.info(
+            "Truncated %d long message(s) at %d chars — %d chars of noise dropped",
+            truncated, max_msg_chars, chars_dropped,
+        )
+    if renamed:
+        logger.info("Renamed %d bot message(s) to '%s'", renamed, bot_name)
     return messages
 
 
@@ -251,7 +312,11 @@ async def _insert_with_retry(
 # Main import routine
 # ---------------------------------------------------------------------------
 async def run_import(args, config: BotConfig) -> int:
-    messages = parse_export(args.file)
+    messages = parse_export(
+        args.file,
+        max_msg_chars=args.max_msg_chars,
+        bot_name=config.bot_name,
+    )
     if not messages:
         logger.error("No importable messages found — nothing to do.")
         return 1
@@ -389,6 +454,10 @@ def main() -> None:
     parser.add_argument("--force", action="store_true", help="Ignore progress file, re-import all days")
     parser.add_argument("--progress", default=_PROGRESS_FILE_DEFAULT, help="Progress file path")
     parser.add_argument("--delay", type=float, default=3.0, help="Seconds to wait between day inserts")
+    parser.add_argument(
+        "--max-msg-chars", type=int, default=_MAX_MSG_CHARS_DEFAULT, dest="max_msg_chars",
+        help=f"Truncate messages longer than this (default {_MAX_MSG_CHARS_DEFAULT}, 0 = keep full text)",
+    )
     args = parser.parse_args()
 
     config = load_config()
