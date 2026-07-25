@@ -84,3 +84,4 @@ dmypy.json
 [0-9][0-9].[0-9][0-9].[0-9][0-9][0-9][0-9]-*.json
 result.json
 import_progress.json
+graph_audit_report.md
