@@ -36,6 +36,14 @@ _rag_debug = logging.getLogger("ragdebug")
 # ── Request token budget for the classifier ──────────────────────────
 _CLASSIFIER_MAX_TOKENS = 220
 
+# DeepSeek V4 models reason before answering by default, and those thinking
+# tokens are billed against max_tokens. At 220 the model spent the entire
+# budget thinking and returned an empty body (finish_reason="length"), so every
+# classification silently fell back to heuristics. The classifier picks a grade
+# and a situation from a fixed list — there is nothing to reason about — so
+# thinking is switched off rather than paid for.
+_CLASSIFIER_THINKING = {"type": "disabled"}
+
 # ── Valid situation values (unknown/missing → "casual") ──────────────
 _SITUATIONS = {"joke", "help", "casual", "tease", "defend"}
 
@@ -244,6 +252,7 @@ class ConversationAnalyzer:
             "max_tokens": max_tokens,
             "temperature": self.temperature,
             "response_format": {"type": "json_object"},
+            "thinking": _CLASSIFIER_THINKING,
         }
 
         async with aiohttp.ClientSession() as session:
