@@ -300,47 +300,6 @@ class DeepSeekBot:
             logger.error(f"Error handling message: {e}", exc_info=True)
 
     # ------------------------------------------------------------------ #
-    # Commands: /daily_log
-    # ------------------------------------------------------------------ #
-    async def _cmd_daily_log(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle /daily_log: show today's messages grouped by user (debug aid)."""
-        if not update.effective_chat or not update.message:
-            return
-
-        chat_id = update.effective_chat.id
-
-        try:
-            daily_messages = self.memory.get_daily_log()
-
-            if not daily_messages:
-                await context.bot.send_message(chat_id=chat_id, text="📋 Daily log пуст")
-                return
-
-            users_data = {}
-            for msg in daily_messages:
-                if msg.user_id not in users_data:
-                    users_data[msg.user_id] = {"username": msg.username, "count": 0, "messages": []}
-                users_data[msg.user_id]["count"] += 1
-                users_data[msg.user_id]["messages"].append(
-                    f"[{msg.timestamp.strftime('%H:%M')}] {msg.text[:50]}"
-                )
-
-            lines = [f"📋 Daily Log ({len(daily_messages)} сообщений)\n"]
-            for uid, data in users_data.items():
-                user_type = "🤖 Bot" if uid == -1 else f"👤 {data['username']}"
-                lines.append(f"\n{user_type}: {data['count']} сообщений")
-                for m in data["messages"][:3]:
-                    lines.append(f"  • {m}")
-                if len(data["messages"]) > 3:
-                    lines.append(f"  ... и ещё {len(data['messages']) - 3}")
-
-            await context.bot.send_message(chat_id=chat_id, text="\n".join(lines))
-
-        except Exception as e:
-            logger.error(f"Error in daily_log command: {e}", exc_info=True)
-            await context.bot.send_message(chat_id=chat_id, text=f"❌ Error: {str(e)[:100]}")
-
-    # ------------------------------------------------------------------ #
     # Commands: RAG (Phase B)
     # ------------------------------------------------------------------ #
     async def _cmd_ragstats(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -452,10 +411,14 @@ class DeepSeekBot:
             )
             return
 
-        # LightRAG returns a context blob; cap it to keep the message readable.
-        summary = facts.strip()
-        if len(summary) > 1500:
-            summary = summary[:1497] + "..."
+        # The retrieval result is a machine-readable context blob (JSON entity
+        # records, <SEP>-joined descriptions). Send it through the model so the
+        # chat gets prose; fall back to the trimmed blob if that call fails.
+        summary = await self.brain.summarize_person(target, facts)
+        if not summary:
+            summary = facts.strip()
+            if len(summary) > 1500:
+                summary = summary[:1497] + "..."
 
         await context.bot.send_message(
             chat_id=chat_id,
@@ -566,7 +529,6 @@ class DeepSeekBot:
             )
 
             # Commands
-            self._app.add_handler(CommandHandler("daily_log", self._cmd_daily_log))
             self._app.add_handler(CommandHandler("ragstats", self._cmd_ragstats))
             self._app.add_handler(CommandHandler("ragnow", self._cmd_ragnow))
             self._app.add_handler(CommandHandler("profile", self._cmd_profile))

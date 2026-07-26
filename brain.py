@@ -764,6 +764,42 @@ class Brain:
         self._system_prompt = new_prompt
         logger.info("System prompt updated")
 
+    async def summarize_person(self, name: str, raw_facts: str) -> Optional[str]:
+        """
+        Turn a raw LightRAG context blob into a readable summary of a person.
+
+        /profile used to print the retrieval result verbatim, which meant the
+        chat got JSON entity records with `<SEP>` separators. The facts are
+        there — they just need a model pass to become a paragraph. Returns None
+        on failure so the caller can fall back to the raw text.
+
+        Args:
+            name: Person the profile was requested for.
+            raw_facts: Context blob as returned by RagClient.retrieve().
+        """
+        prompt = (
+            f"Ниже — сырые данные из базы знаний про человека по имени {name}.\n"
+            f"Перескажи их живым текстом: кто это, чем занимается, что любит, "
+            f"характерные привычки и запомнившиеся истории.\n"
+            f"Только то, что есть в данных — не придумывай. Если данных мало, "
+            f"так и скажи. Без JSON, без служебных пометок вроде <SEP>, "
+            f"до 900 символов.\n\n{raw_facts}"
+        )
+        try:
+            response = await asyncio.to_thread(
+                lambda: self.client.chat.completions.create(
+                    model=self.config.deepseek_model,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=600,
+                    temperature=0.4,
+                    extra_body={"thinking": {"type": "disabled"}},
+                )
+            )
+            return (response.choices[0].message.content or "").strip() or None
+        except Exception as e:
+            logger.warning("summarize_person failed for %r: %s", name, e)
+            return None
+
     def grudge_level_for(self, chat_id: Optional[int], user_id: int) -> int:
         """Current grudge level for (chat_id, user_id) — used by /mood."""
         return self._grudge.grudge_level((chat_id, user_id))

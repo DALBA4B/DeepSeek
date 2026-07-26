@@ -85,3 +85,6 @@ dmypy.json
 result.json
 import_progress.json
 graph_audit_report.md
+
+# Temp dump of a credential value for pasting into hosting UI
+_railway_value.txt
