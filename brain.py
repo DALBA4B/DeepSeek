@@ -11,7 +11,7 @@ import random
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
-from typing import Deque, Dict, Hashable, List, Optional, Tuple
+from typing import Awaitable, Callable, Deque, Dict, Hashable, List, Optional, Tuple
 
 from openai import OpenAI
 
@@ -333,6 +333,7 @@ class Brain:
         avoid_responses: Optional[List[str]] = None,
         user_id: Optional[int] = None,
         chat_id: Optional[int] = None,
+        on_decided_to_respond: Optional[Callable[[], Awaitable[None]]] = None,
     ) -> Optional[str]:
         """
         V2 main entry point. One-stop: classify → fetch memory → generate.
@@ -350,6 +351,11 @@ class Brain:
                 simply skipped when absent.
             chat_id: Telegram chat id — combined with user_id so a grudge in
                 one chat doesn't leak into another.
+            on_decided_to_respond: Awaited once classification says the bot is
+                actually going to answer (grade > 0). The caller uses it to
+                start the "typing" indicator — showing it before classification
+                would tell the chat the bot is typing on every single message,
+                including the ones it then silently ignores.
 
         Returns:
             Generated response text, or None if grade==0 (skip).
@@ -402,6 +408,15 @@ class Brain:
                 )
                 return f"{SILENT_REACT_PREFIX}{','.join(pool)}"
             return None
+
+        # From here on the bot is committed to producing a real answer, so this
+        # is the first honest moment to show "typing". A failing indicator must
+        # never cost us the reply — it's cosmetic.
+        if on_decided_to_respond is not None:
+            try:
+                await on_decided_to_respond()
+            except Exception as e:
+                logger.debug("typing indicator callback failed: %s", e)
 
         # Step 2b: Grudge escalation for "defend" situations. We trust the
         # classifier's own per-message situation call here (it already

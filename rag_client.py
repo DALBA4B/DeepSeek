@@ -58,6 +58,9 @@ class RagClient:
         password:       Auth password
         query_mode:     Retrieval mode (mix / hybrid / local / global / naive)
         query_top_k:    How many chunks/entities to retrieve per query
+        query_max_tokens: Cap on the size of the returned context (0 = no cap).
+            LightRAG otherwise returns everything it finds — tens of thousands
+            of characters that all end up in the prompt.
         query_timeout:  Seconds to wait for a query answer
         insert_timeout: Seconds to wait for an insert acknowledgement
     """
@@ -69,6 +72,7 @@ class RagClient:
         password: str,
         query_mode: str = "mix",
         query_top_k: int = 5,
+        query_max_tokens: int = 14000,
         query_timeout: float = 25.0,
         insert_timeout: float = 15.0,
     ) -> None:
@@ -81,6 +85,7 @@ class RagClient:
         self.password = password
         self.query_mode = query_mode
         self.query_top_k = query_top_k
+        self.query_max_tokens = query_max_tokens
         self.query_timeout = query_timeout
         self.insert_timeout = insert_timeout
 
@@ -249,6 +254,8 @@ class RagClient:
             "only_need_context": True,
             "top_k": self.query_top_k,
         }
+        if self.query_max_tokens:
+            payload["max_total_tokens"] = self.query_max_tokens
         _rag_debug.info("RAG-DEBUG [lightrag http] POST /query payload=%s", payload)
 
         t0 = time.monotonic()

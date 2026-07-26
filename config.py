@@ -96,8 +96,19 @@ def _get_firebase_credentials() -> Optional[str]:
     # Priority 1: FIREBASE_CRED_JSON (full JSON string - for Railway)
     firebase_json = os.getenv("FIREBASE_CRED_JSON")
     if firebase_json:
+        stripped = firebase_json.strip()
+        # A value pasted into a hosting dashboard can arrive with its outer
+        # braces clipped off. Without this repair the string doesn't start with
+        # "{", so it's treated as a *file path* and Firebase dies with a
+        # baffling "File name too long" instead of naming the real problem.
+        if not stripped.startswith("{") and '"type"' in f'"{stripped[:20]}':
+            logger.warning(
+                "FIREBASE_CRED_JSON looks like JSON with its outer braces "
+                "missing — restoring them. Re-paste the value including { }."
+            )
+            stripped = "{" + stripped.rstrip("}") + "}"
         logger.info("Using FIREBASE_CRED_JSON from environment")
-        return firebase_json
+        return stripped
     
     # Priority 2: FIREBASE_CRED_PATH (file path - for local development)
     firebase_path = os.getenv("FIREBASE_CRED_PATH")
@@ -179,6 +190,7 @@ def load_config() -> BotConfig:
         lightrag_api_password=os.getenv("LIGHTRAG_API_PASSWORD", ""),
         lightrag_query_mode=os.getenv("LIGHTRAG_QUERY_MODE", "mix"),
         lightrag_query_top_k=_get_optional_int("LIGHTRAG_QUERY_TOP_K", 5),
+        lightrag_query_max_tokens=_get_optional_int("LIGHTRAG_QUERY_MAX_TOKENS", 14000),
         lightrag_query_timeout=_get_optional_float("LIGHTRAG_QUERY_TIMEOUT", 25.0),
         lightrag_insert_timeout=_get_optional_float("LIGHTRAG_INSERT_TIMEOUT", 15.0),
 
@@ -190,7 +202,8 @@ def load_config() -> BotConfig:
 
         # Logging
         log_level=os.getenv("LOG_LEVEL", "INFO"),
-        log_format=os.getenv("LOG_FORMAT", "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        log_format=os.getenv("LOG_FORMAT", "%(asctime)s - %(name)s - %(levelname)s - %(message)s"),
+        selftest_on_startup=os.getenv("SELFTEST_ON_STARTUP", "false").lower() in ("true", "1", "yes"),
     )
 
 

@@ -10,6 +10,7 @@ generate), and a nightly RagIngestTask feeds the day's chat into LightRAG.
 import logging
 import os
 import signal
+import subprocess
 import sys
 from logging.handlers import RotatingFileHandler
 from typing import List, Optional
@@ -62,6 +63,7 @@ def build_rag_client(config: BotConfig) -> Optional[RagClient]:
         password=config.lightrag_api_password,
         query_mode=config.lightrag_query_mode,
         query_top_k=config.lightrag_query_top_k,
+        query_max_tokens=config.lightrag_query_max_tokens,
         query_timeout=config.lightrag_query_timeout,
         insert_timeout=config.lightrag_insert_timeout,
     )
@@ -128,6 +130,48 @@ class DeepSeekBot:
         self._response_tracker = RecentResponseTracker(max_items=10)
 
         logger.info("DeepSeekBot initialized (Phase B: LightRAG pipeline)")
+
+    def _run_selftest(self) -> None:
+        """
+        Run pytest once at startup and log the summary.
+
+        Deliberately advisory-only: pytest runs in a separate process and the
+        exit code is only logged, never acted on. A broken test must not keep
+        the bot from starting (on Railway that would mean a restart loop) — the
+        point is that a failure is visible in the logs afterwards.
+        """
+        if not self.config.selftest_on_startup:
+            return
+
+        logger.info("Self-test: running pytest (result is logged, never fatal)...")
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-m", "pytest", "-q", "--no-header"],
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        except FileNotFoundError:
+            logger.warning("Self-test skipped: pytest is not installed")
+            return
+        except subprocess.TimeoutExpired:
+            logger.warning("Self-test timed out after 120s — skipping")
+            return
+        except Exception as e:
+            logger.warning("Self-test could not be started: %s", e)
+            return
+
+        # pytest's own last line is the summary ("102 passed in 3.78s").
+        tail = [l for l in (proc.stdout or "").strip().splitlines() if l.strip()]
+        summary = tail[-1] if tail else "(no output)"
+        if proc.returncode == 0:
+            logger.info("Self-test OK: %s", summary)
+        else:
+            logger.warning("Self-test FAILED (exit %d): %s", proc.returncode, summary)
+            for line in tail:
+                if line.startswith("FAILED") or line.startswith("ERROR"):
+                    logger.warning("Self-test: %s", line)
 
     def _setup_rag_ingest(self) -> None:
         """Wire up the nightly RAG ingest task if LightRAG is configured."""
@@ -207,8 +251,13 @@ class DeepSeekBot:
 
             bot_was_recent = self.memory.bot_responded_recently(within_last_n=3)
 
-            # Show "typing" while we classify + (maybe) fetch facts + generate
-            await context.bot.send_chat_action(chat_id=message.chat_id, action="typing")
+            # "typing" is deliberately NOT shown yet: at this point we don't
+            # know whether the bot will answer at all. It's started from the
+            # callback below, once classification has decided it will.
+            async def show_typing() -> None:
+                await context.bot.send_chat_action(
+                    chat_id=message.chat_id, action="typing"
+                )
 
             # V2: single call decides grade 0-3, whether memory is needed, and
             # generates the answer. Returns None when grade == 0 (stay silent).
@@ -222,6 +271,7 @@ class DeepSeekBot:
                 avoid_responses=self._response_tracker.get_avoid_list(),
                 user_id=user_id,
                 chat_id=message.chat_id,
+                on_decided_to_respond=show_typing,
             )
 
             if response is None:
@@ -502,6 +552,8 @@ class DeepSeekBot:
             logger.info(f"Chat filter: {self.config.chat_id or 'All chats'}")
             logger.info(f"LightRAG: {'on' if self.rag_client else 'off'}")
             logger.info("=" * 50)
+
+            self._run_selftest()
 
             self._setup_signal_handlers()
 

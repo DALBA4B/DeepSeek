@@ -6,6 +6,7 @@ Now includes bot's own responses in short-term memory.
 """
 
 import logging
+import re
 from collections import deque
 from datetime import datetime
 from typing import List, Optional, Deque
@@ -82,6 +83,36 @@ class MemoryStorage(ABC):
         pass
 
 
+def _redact_credentials(text: str, secret: str) -> str:
+    """
+    Strip a credential blob out of an error message.
+
+    Firebase errors quote the offending value in full, so a malformed
+    FIREBASE_CRED_JSON would otherwise publish the service-account private key
+    into the log stream. Both the whole blob and any PEM body inside it are
+    replaced; the surrounding message is kept so the error stays diagnosable.
+    """
+    cleaned = text
+    if secret:
+        cleaned = cleaned.replace(secret, "<credentials redacted>")
+        # The value may also appear with its outer braces stripped.
+        inner = secret.strip().lstrip("{").rstrip("}")
+        if len(inner) > 40:
+            cleaned = cleaned.replace(inner, "<credentials redacted>")
+    cleaned = re.sub(
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+        "<private key redacted>",
+        cleaned,
+        flags=re.DOTALL,
+    )
+    # Belt and braces: the blob may reach us reformatted (re-quoted, escaped,
+    # partially clipped) so an exact-match replace misses it. Any surviving
+    # service-account field name means secret material is still in the string.
+    if re.search(r'private_key|private_key_id|"type"\s*:\s*"service_account', cleaned):
+        return "<service account credentials redacted>"
+    return cleaned
+
+
 class FirebaseStorage(MemoryStorage):
     """Firebase Firestore storage backend."""
     
@@ -108,7 +139,13 @@ class FirebaseStorage(MemoryStorage):
             self.db = firestore.client()
             logger.info("Firebase storage initialized")
         except Exception as e:
-            logger.error(f"Failed to initialize Firebase: {e}")
+            # Never log the exception verbatim: when the credential blob is
+            # malformed, the libraries echo the whole value back — private key
+            # included — straight into the logs.
+            logger.error(
+                "Failed to initialize Firebase: %s: %s",
+                type(e).__name__, _redact_credentials(str(e), cred_path),
+            )
             raise
     
     def save_message(self, message: ChatMessage) -> None:
@@ -179,7 +216,11 @@ class Memory:
             try:
                 self._storage = FirebaseStorage(config.firebase_cred_path)
             except Exception as e:
-                logger.warning(f"Firebase unavailable, running without long-term memory: {e}")
+                logger.warning(
+                    "Firebase unavailable, running without long-term memory: %s: %s",
+                    type(e).__name__,
+                    _redact_credentials(str(e), config.firebase_cred_path or ""),
+                )
                 self._storage = None
         
         logger.info(

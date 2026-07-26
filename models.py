@@ -242,6 +242,12 @@ class BotConfig:
     lightrag_api_password: str = ""     # AUTH_ACCOUNTS password
     lightrag_query_mode: str = "mix"    # mix / hybrid / local / global / naive
     lightrag_query_top_k: int = 5
+    # Cap on the retrieved context. Without it LightRAG returned 48-90k chars
+    # per query and all of it went straight into the prompt, so a single
+    # question with memory cost ~20k tokens. 14000 was measured as the lowest
+    # budget that still keeps the answer-bearing details (10000 already dropped
+    # "Кирилл — взлом систем" and "Пан — C1 польский"); 0 disables the cap.
+    lightrag_query_max_tokens: int = 14000
     lightrag_query_timeout: float = 8.0
     lightrag_insert_timeout: float = 15.0
 
@@ -254,6 +260,11 @@ class BotConfig:
     # Logging
     log_level: str = "INFO"
     log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+    # Run the test suite once at startup and log the result. Purely
+    # informational: the outcome is never allowed to stop the bot, because a
+    # red test on Railway would otherwise turn into a restart loop.
+    selftest_on_startup: bool = False
 
 
 @dataclass
