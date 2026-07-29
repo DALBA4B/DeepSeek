@@ -26,6 +26,12 @@ Design (matches the discussion / PHASE plans)
   not abort the whole backfill.
 * Long pasted blobs are truncated (--max-msg-chars) so copied prompts/articles
   don't end up retrieved as "facts about people".
+* Media messages with no caption become a bare "[фото]" / "[стикер]" line, so
+  the conversation reacting to them still makes sense. Days made up of nothing
+  but media are skipped — there is no fact to extract from them.
+* Sender identity is keyed on Telegram's from_id via a persisted name map
+  (--name-map), so a friend renaming themselves between exports does not turn
+  into a second person in the graph.
 * Resumable: every successfully inserted day is recorded in a progress file
   (default import_progress.json). Re-running skips days already done, so you
   can stop/restart freely and go month by month.
@@ -62,6 +68,7 @@ import json
 import logging
 import os
 import sys
+from collections import Counter, defaultdict
 from datetime import date, datetime
 from typing import Dict, List, Optional
 
@@ -78,6 +85,7 @@ logging.basicConfig(
 logger = logging.getLogger("import_history")
 
 _PROGRESS_FILE_DEFAULT = "import_progress.json"
+_NAME_MAP_FILE_DEFAULT = "import_names.json"
 _INSERT_MAX_ATTEMPTS = 3
 _INSERT_RETRY_BASE_DELAY = 2.0  # seconds; backfill is not latency-sensitive
 
@@ -100,6 +108,36 @@ _SENDER_ALIASES = {
     "Deep Seek": None,
     "deepseek": None,
 }
+
+# A message with no text is still an event: someone sent a photo, and the next
+# three messages discuss it. Dropped entirely (the old behaviour), LightRAG saw
+# the discussion without its subject — and four days that held nothing but
+# media never got a document at all. A bare word is enough to restore the link;
+# we have no description of the content and don't invent one.
+_MEDIA_LABELS = {
+    "sticker": "стикер",
+    "animation": "гифка",
+    "video_message": "кружок",
+    "video_file": "видео",
+    "voice_message": "голосовое",
+    "audio_file": "аудио",
+}
+_MEDIA_LABEL_PHOTO = "фото"
+_MEDIA_LABEL_FALLBACK = "файл"
+
+
+def _media_placeholder(m: dict) -> Optional[str]:
+    """Return "[фото]"-style stand-in text for a media message, or None."""
+    media_type = m.get("media_type")
+    if media_type:
+        label = _MEDIA_LABELS.get(media_type, _MEDIA_LABEL_FALLBACK)
+    elif m.get("photo"):
+        label = _MEDIA_LABEL_PHOTO
+    elif m.get("file"):
+        label = _MEDIA_LABEL_FALLBACK
+    else:
+        return None
+    return f"[{label}]"
 
 
 # ---------------------------------------------------------------------------
@@ -148,21 +186,78 @@ def _resolve_sender(raw_name: str, bot_name: Optional[str]) -> str:
     return raw_name
 
 
+# ---------------------------------------------------------------------------
+# Canonical sender names (stable across exports)
+# ---------------------------------------------------------------------------
+# Telegram exports carry whatever display name a person had at export time. A
+# friend who renames themselves between two exports would land in the graph as
+# a second person, and every fact about them would be split — the same mess we
+# had to merge by hand for Тима/Tima. from_id never changes, so it is the real
+# identity. The map is persisted: the FIRST name we ever saw for an id wins,
+# including in imports run months later.
+def build_name_map(
+    messages_raw: List[dict], known: Dict[str, str], bot_name: Optional[str]
+) -> Dict[str, str]:
+    """
+    Extend `known` (from_id -> canonical name) with ids seen in this export.
+
+    Ids already in `known` keep their name. New ids take the name they use most
+    often in the export.
+    """
+    seen: Dict[str, Counter] = defaultdict(Counter)
+    for m in messages_raw:
+        if m.get("type") != "message":
+            continue
+        from_id = str(m.get("from_id") or "")
+        if not from_id:
+            continue
+        seen[from_id][_resolve_sender(str(m.get("from") or "Unknown"), bot_name)] += 1
+
+    name_map = dict(known)
+    for from_id, names in seen.items():
+        if from_id not in name_map:
+            name_map[from_id] = names.most_common(1)[0][0]
+    return name_map
+
+
+def load_name_map(path: str) -> Dict[str, str]:
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return {str(k): str(v) for k, v in json.load(f).items()}
+    except Exception as e:
+        logger.warning("Could not read name map %s: %s", path, e)
+        return {}
+
+
+def save_name_map(path: str, name_map: Dict[str, str]) -> None:
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(name_map, f, ensure_ascii=False, indent=2, sort_keys=True)
+    except Exception as e:
+        logger.warning("Could not write name map %s: %s", path, e)
+
+
 def parse_export(
     path: str,
     max_msg_chars: int = _MAX_MSG_CHARS_DEFAULT,
     bot_name: Optional[str] = None,
+    name_map: Optional[Dict[str, str]] = None,
 ) -> List[ChatMessage]:
     """
     Parse a Telegram Desktop JSON export into ChatMessage objects.
 
-    * Skips service messages (joins/pins/calls) and messages with empty text.
+    * Skips service messages (joins/pins/calls).
+    * Media without a caption becomes "[фото]" / "[стикер]" etc. so the
+      conversation around it stays intact (see _MEDIA_LABELS).
     * Resolves reply_to_message_id to the replied-to text via an id->text map,
       so RagIngestor can inline reply context exactly like the live path.
     * Timestamps come from `date` (ISO local time in the export).
     * Truncates messages longer than `max_msg_chars` (0 = keep everything) —
       see _MAX_MSG_CHARS_DEFAULT for why.
-    * Rewrites the bot's export name to `bot_name` (see _SENDER_ALIASES).
+    * Names come from `name_map` (from_id -> canonical name) when given, so a
+      renamed friend stays one person across exports.
 
     Returns messages in file order (Telegram exports are already chronological).
     """
@@ -175,19 +270,24 @@ def parse_export(
             f"{path}: no top-level 'messages' array — is this a Telegram JSON export?"
         )
 
-    # First pass: id -> flattened text, to resolve replies.
+    # First pass: id -> flattened text, to resolve replies. Media placeholders
+    # are included so a reply to a photo quotes "[фото]" instead of nothing.
     text_by_id: Dict[int, str] = {}
     for m in raw_messages:
         mid = m.get("id")
         if isinstance(mid, int):
-            text_by_id[mid] = _flatten_text(m.get("text", ""))
+            text_by_id[mid] = _flatten_text(m.get("text", "")).strip() or (
+                _media_placeholder(m) or ""
+            )
 
+    name_map = name_map or {}
     messages: List[ChatMessage] = []
     skipped_service = 0
     skipped_empty = 0
     truncated = 0
     chars_dropped = 0
     renamed = 0
+    media_kept = 0
 
     for m in raw_messages:
         if m.get("type") != "message":
@@ -196,8 +296,12 @@ def parse_export(
 
         text = _flatten_text(m.get("text", "")).strip()
         if not text:
-            skipped_empty += 1
-            continue
+            placeholder = _media_placeholder(m)
+            if placeholder is None:
+                skipped_empty += 1
+                continue
+            text = placeholder
+            media_kept += 1
 
         if max_msg_chars and len(text) > max_msg_chars:
             chars_dropped += len(text) - max_msg_chars
@@ -217,7 +321,8 @@ def parse_export(
             reply_text = reply_text.strip() or None
 
         raw_sender = str(m.get("from") or "Unknown")
-        sender = _resolve_sender(raw_sender, bot_name)
+        from_id = str(m.get("from_id") or "")
+        sender = name_map.get(from_id) or _resolve_sender(raw_sender, bot_name)
         if sender != raw_sender:
             renamed += 1
 
@@ -236,13 +341,15 @@ def parse_export(
         "Parsed %d messages (skipped %d service, %d empty/undated)",
         len(messages), skipped_service, skipped_empty,
     )
+    if media_kept:
+        logger.info("Kept %d media message(s) as placeholders ([фото], [стикер], ...)", media_kept)
     if truncated:
         logger.info(
             "Truncated %d long message(s) at %d chars — %d chars of noise dropped",
             truncated, max_msg_chars, chars_dropped,
         )
     if renamed:
-        logger.info("Renamed %d bot message(s) to '%s'", renamed, bot_name)
+        logger.info("Normalised %d sender name(s)", renamed)
     return messages
 
 
@@ -261,6 +368,20 @@ def group_by_day(
         day = to_aware(msg.timestamp, tz).date()
         buckets.setdefault(day, []).append(msg)
     return dict(sorted(buckets.items()))
+
+
+def _is_media_only(day_messages: List[ChatMessage]) -> bool:
+    """
+    True when a day holds nothing but media placeholders.
+
+    "Максим: [фото] / Кирилл: [фото]" gives the extractor nothing to learn, so
+    the day is skipped rather than inserted as an empty document. Placeholders
+    mixed WITH real text are kept — there they anchor the conversation.
+    """
+    return all(
+        m.text.startswith("[") and m.text.endswith("]") and len(m.text) < 15
+        for m in day_messages
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -312,10 +433,19 @@ async def _insert_with_retry(
 # Main import routine
 # ---------------------------------------------------------------------------
 async def run_import(args, config: BotConfig) -> int:
+    with open(args.file, "r", encoding="utf-8") as f:
+        raw = json.load(f).get("messages") or []
+
+    name_map = build_name_map(raw, load_name_map(args.name_map), config.bot_name)
+    if not args.dry_run:
+        save_name_map(args.name_map, name_map)
+    logger.info("Sender identities: %d known (%s)", len(name_map), args.name_map)
+
     messages = parse_export(
         args.file,
         max_msg_chars=args.max_msg_chars,
         bot_name=config.bot_name,
+        name_map=name_map,
     )
     if not messages:
         logger.error("No importable messages found — nothing to do.")
@@ -360,6 +490,7 @@ async def run_import(args, config: BotConfig) -> int:
     total_days = 0
     total_blocks = 0
     total_msgs = 0
+    skipped_media_days = 0
     failed_days: List[str] = []
 
     for day in days:
@@ -368,6 +499,11 @@ async def run_import(args, config: BotConfig) -> int:
             continue
 
         day_messages = by_day[day]
+        if _is_media_only(day_messages):
+            logger.info("%s: %d media message(s), nothing to extract — skipped", day_key, len(day_messages))
+            skipped_media_days += 1
+            continue
+
         blocks = grouper.group_into_blocks(day_messages)
         if not blocks:
             continue
@@ -407,6 +543,8 @@ async def run_import(args, config: BotConfig) -> int:
         "Done: %s %d day(s), %d block(s), %d message(s).",
         verb, total_days, total_blocks, total_msgs,
     )
+    if skipped_media_days:
+        logger.info("Skipped %d day(s) containing only media.", skipped_media_days)
     if failed_days:
         logger.warning(
             "%d day(s) FAILED (not marked done, safe to re-run): %s",
@@ -453,6 +591,10 @@ def main() -> None:
     parser.add_argument("--show", action="store_true", help="With --dry-run, print block text")
     parser.add_argument("--force", action="store_true", help="Ignore progress file, re-import all days")
     parser.add_argument("--progress", default=_PROGRESS_FILE_DEFAULT, help="Progress file path")
+    parser.add_argument(
+        "--name-map", default=_NAME_MAP_FILE_DEFAULT, dest="name_map",
+        help="from_id -> canonical name map, so renamed people stay one entity",
+    )
     parser.add_argument("--delay", type=float, default=3.0, help="Seconds to wait between day inserts")
     parser.add_argument(
         "--max-msg-chars", type=int, default=_MAX_MSG_CHARS_DEFAULT, dest="max_msg_chars",

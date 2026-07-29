@@ -84,6 +84,7 @@ dmypy.json
 [0-9][0-9].[0-9][0-9].[0-9][0-9][0-9][0-9]-*.json
 result.json
 import_progress.json
+import_names.json
 graph_audit_report.md
 
 # Temp dump of a credential value for pasting into hosting UI
