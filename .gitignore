@@ -89,3 +89,11 @@ graph_audit_report.md
 
 # Temp dump of a credential value for pasting into hosting UI
 _railway_value.txt
+
+# Exported knowledge graph (regenerate with graph_export.py)
+graph.gexf
+
+# Graph tooling run artifacts — snapshots of a specific graph state, stale the
+# moment anything is imported. Regenerate with graph_merge.py / graph_cleanup.py.
+merge_plan.json
+desc_snapshot.json

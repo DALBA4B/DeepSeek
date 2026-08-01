@@ -73,7 +73,7 @@ class RagClient:
         query_mode: str = "mix",
         query_top_k: int = 5,
         query_max_tokens: int = 14000,
-        query_timeout: float = 25.0,
+        query_timeout: float = 35.0,
         insert_timeout: float = 15.0,
     ) -> None:
         # Normalize: strip trailing slash, drop accidental /webui suffix
@@ -88,6 +88,11 @@ class RagClient:
         self.query_max_tokens = query_max_tokens
         self.query_timeout = query_timeout
         self.insert_timeout = insert_timeout
+
+        # Reason the last retrieve() failed (timeout / network / HTTP error),
+        # or None if it succeeded or simply found nothing. brain.py reads this
+        # to tell "LightRAG is down" apart from "nothing relevant in the graph".
+        self.last_error: Optional[str] = None
 
         # Cached JWT state
         self._token: Optional[str] = None
@@ -248,6 +253,7 @@ class RagClient:
         if not query or not query.strip():
             return None
 
+        self.last_error = None
         payload = {
             "query": query,
             "mode": self.query_mode,
@@ -265,6 +271,7 @@ class RagClient:
             )
         except RagClientError as e:
             elapsed_ms = (time.monotonic() - t0) * 1000
+            self.last_error = str(e)
             logger.warning(f"LightRAG retrieve failed (query={query!r}): {e}")
             _rag_debug.info(
                 "RAG-DEBUG [lightrag http] /query failed after %.0fms: %s", elapsed_ms, e

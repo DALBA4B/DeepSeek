@@ -452,10 +452,26 @@ class Brain:
                     retrieve_ms, len(rag_facts), rag_facts,
                 )
             else:
-                logger.debug("LightRAG returned no facts for query: %r", result.rag_query)
+                # A memory miss is never fatal — but it must be visible. The bot
+                # is about to answer as if it remembers nothing, and silently
+                # degrading here is exactly how a broken/slow LightRAG goes
+                # unnoticed for days. Separate the two causes: a failed request
+                # (timeout/network/HTTP) is an infrastructure problem, an empty
+                # result is a retrieval-quality problem.
+                rag_error = getattr(self._rag_client, "last_error", None)
+                if rag_error:
+                    logger.warning(
+                        "Отвечаю БЕЗ памяти: LightRAG не ответил за %.0fms (query=%r): %s",
+                        retrieve_ms, result.rag_query, rag_error,
+                    )
+                else:
+                    logger.warning(
+                        "Отвечаю БЕЗ памяти: LightRAG ничего не нашёл за %.0fms (query=%r)",
+                        retrieve_ms, result.rag_query,
+                    )
                 _rag_debug.info(
-                    "RAG-DEBUG [2/4 retrieve] done in %.0fms -> ничего не найдено (или LightRAG недоступен)",
-                    retrieve_ms,
+                    "RAG-DEBUG [2/4 retrieve] done in %.0fms -> ничего не найдено (%s)",
+                    retrieve_ms, rag_error or "пустой результат, LightRAG ответил",
                 )
         elif result.needs_memory:
             _rag_debug.info(

@@ -7,6 +7,7 @@ Brain.analyze_and_respond() (classify grade 0-3 → fetch LightRAG facts →
 generate), and a nightly RagIngestTask feeds the day's chat into LightRAG.
 """
 
+import asyncio
 import logging
 import os
 import signal
@@ -26,6 +27,7 @@ from responder import Responder, ResponseParser
 from rag_client import RagClient
 from rag_ingestor import RagIngestor
 from night_analyzator import TaskScheduler, RagIngestTask
+from utils import keep_typing, start_typing, stop_typing
 
 logger = logging.getLogger(__name__)
 
@@ -253,43 +255,52 @@ class DeepSeekBot:
 
             # "typing" is deliberately NOT shown yet: at this point we don't
             # know whether the bot will answer at all. It's started from the
-            # callback below, once classification has decided it will.
+            # callback below, once classification has decided it will, and runs
+            # until the reply is actually sent — a single send_chat_action only
+            # holds the bubble ~5s, far less than a full generation takes.
+            typing_task: Optional[asyncio.Task] = None
+
             async def show_typing() -> None:
-                await context.bot.send_chat_action(
-                    chat_id=message.chat_id, action="typing"
+                nonlocal typing_task
+                if typing_task is None:
+                    typing_task = start_typing(context.bot, message.chat_id)
+
+            try:
+                # V2: single call decides grade 0-3, whether memory is needed, and
+                # generates the answer. Returns None when grade == 0 (stay silent).
+                recent_lines: List[str] = self.memory.get_recent_context_lines()
+                response = await self.brain.analyze_and_respond(
+                    message_text=text,
+                    author=username,
+                    recent_messages=recent_lines,
+                    reply_text=reply_text or None,
+                    bot_responded_recently=bot_was_recent,
+                    avoid_responses=self._response_tracker.get_avoid_list(),
+                    user_id=user_id,
+                    chat_id=message.chat_id,
+                    on_decided_to_respond=show_typing,
                 )
 
-            # V2: single call decides grade 0-3, whether memory is needed, and
-            # generates the answer. Returns None when grade == 0 (stay silent).
-            recent_lines: List[str] = self.memory.get_recent_context_lines()
-            response = await self.brain.analyze_and_respond(
-                message_text=text,
-                author=username,
-                recent_messages=recent_lines,
-                reply_text=reply_text or None,
-                bot_responded_recently=bot_was_recent,
-                avoid_responses=self._response_tracker.get_avoid_list(),
-                user_id=user_id,
-                chat_id=message.chat_id,
-                on_decided_to_respond=show_typing,
-            )
+                if response is None:
+                    logger.debug("Bot decided to stay silent (grade 0)")
+                    return
 
-            if response is None:
-                logger.debug("Bot decided to stay silent (grade 0)")
-                return
+                # Reaction-only ack (grade 0 but chose not to be fully silent) —
+                # bypasses the normal text/GIPHY/STICKER/REACT pipeline entirely,
+                # no message history tracking, since this isn't really a "reply".
+                if response.startswith(SILENT_REACT_PREFIX):
+                    candidates = response[len(SILENT_REACT_PREFIX):].split(",")
+                    await self.responder.send_silent_reaction_from_pool(message, candidates)
+                    return
 
-            # Reaction-only ack (grade 0 but chose not to be fully silent) —
-            # bypasses the normal text/GIPHY/STICKER/REACT pipeline entirely,
-            # no message history tracking, since this isn't really a "reply".
-            if response.startswith(SILENT_REACT_PREFIX):
-                candidates = response[len(SILENT_REACT_PREFIX):].split(",")
-                await self.responder.send_silent_reaction_from_pool(message, candidates)
-                return
+                logger.info(f"Generated response: {response[:50]}")
 
-            logger.info(f"Generated response: {response[:50]}")
-
-            # Send whatever the brain produced (text / GIPHY: / REACT: / STICKER:)
-            success = await self.responder.send_response(message, response, context.bot)
+                # Send whatever the brain produced (text / GIPHY: / REACT: / STICKER:)
+                success = await self.responder.send_response(message, response, context.bot)
+            finally:
+                # Stop the indicator on every exit path: silence, reaction,
+                # successful send, or an exception mid-generation.
+                await stop_typing(typing_task)
 
             if success:
                 parsed = ResponseParser.parse(response, text_only_mode=self.config.text_only_mode)
@@ -402,19 +413,23 @@ class DeepSeekBot:
             )
             return
 
-        await context.bot.send_chat_action(chat_id=chat_id, action="typing")
-
-        facts = await self.rag_client.retrieve(f"факты, интересы и привычки человека по имени {target}")
-        if not facts:
-            await context.bot.send_message(
-                chat_id=chat_id, text=f"🤷 Ничего не знаю про «{target}». Возможно, ещё не проиндексировано."
+        # LightRAG retrieval plus a summarization call — comfortably longer than
+        # Telegram's ~5s action window, so hold the indicator for both.
+        async with keep_typing(context.bot, chat_id):
+            facts = await self.rag_client.retrieve(
+                f"факты, интересы и привычки человека по имени {target}"
             )
-            return
+            if not facts:
+                await context.bot.send_message(
+                    chat_id=chat_id, text=f"🤷 Ничего не знаю про «{target}». Возможно, ещё не проиндексировано."
+                )
+                return
 
-        # The retrieval result is a machine-readable context blob (JSON entity
-        # records, <SEP>-joined descriptions). Send it through the model so the
-        # chat gets prose; fall back to the trimmed blob if that call fails.
-        summary = await self.brain.summarize_person(target, facts)
+            # The retrieval result is a machine-readable context blob (JSON entity
+            # records, <SEP>-joined descriptions). Send it through the model so the
+            # chat gets prose; fall back to the trimmed blob if that call fails.
+            summary = await self.brain.summarize_person(target, facts)
+
         if not summary:
             summary = facts.strip()
             if len(summary) > 1500:

@@ -241,14 +241,18 @@ class BotConfig:
     lightrag_api_user: str = ""         # AUTH_ACCOUNTS user
     lightrag_api_password: str = ""     # AUTH_ACCOUNTS password
     lightrag_query_mode: str = "mix"    # mix / hybrid / local / global / naive
-    lightrag_query_top_k: int = 5
+    # Seeds for the two vector lookups (entities and relations); the graph walk
+    # then expands from them. 5 was too few once the graph passed ~7000 nodes —
+    # the whole answer hung on five guessed seeds. Raising it costs nothing at
+    # query time because lightrag_query_max_tokens still caps what comes back.
+    lightrag_query_top_k: int = 20
     # Cap on the retrieved context. Without it LightRAG returned 48-90k chars
     # per query and all of it went straight into the prompt, so a single
     # question with memory cost ~20k tokens. 14000 was measured as the lowest
     # budget that still keeps the answer-bearing details (10000 already dropped
     # "Кирилл — взлом систем" and "Пан — C1 польский"); 0 disables the cap.
     lightrag_query_max_tokens: int = 14000
-    lightrag_query_timeout: float = 8.0
+    lightrag_query_timeout: float = 35.0
     lightrag_insert_timeout: float = 15.0
 
     # Nightly ingest: how often and how the chat is grouped before insert
