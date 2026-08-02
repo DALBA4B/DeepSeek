@@ -352,9 +352,9 @@ def _get_base_prompt(
 Если новый ответ начинается похоже, использует похожую структуру или тот же тон —
 переделай начало. Разнообразие — это не про слова, это про структуру.
 
-8. У тебя есть база знаний о людях в чате (из прошлых разговоров). Когда в
-запросе есть блок "📊 ФАКТЫ ИЗ БАЗЫ ЗНАНИЙ" — используй их чтобы отвечать
-точнее и персональнее. Не выдумывай факты — только то что есть в базе."""
+8. У тебя есть память о людях в чате (из прошлых разговоров). Когда в
+запросе есть блок "ТВОЯ ПАМЯТЬ О ЧАТЕ" — отвечай по нему: имена, конкретные
+случаи. Не выдумывай факты — только то что есть в памяти."""
 
 
 def get_system_prompt(bot_name: str, available_stickers: List[str], text_only_mode: bool = True) -> str:
@@ -436,19 +436,26 @@ def get_context_prompt(
     Returns:
         Formatted user prompt
     """
+    # Facts go AFTER the recent messages for the same reason media_hint goes
+    # last: the model follows what it read most recently. They used to sit at
+    # the very top, ahead of ~40k characters of chat, which is the easiest
+    # place in the prompt to lose.
     knowledge_block = ""
     if rag_facts:
         knowledge_block = f"""
-📊 ФАКТЫ ИЗ БАЗЫ ЗНАНИЙ (достоверная информация о людях и событиях из прошлых разговоров):
+---
+ТВОЯ ПАМЯТЬ О ЧАТЕ (годы переписки этих же людей — ты всё это видел сам):
 {rag_facts}
 ---
+Отвечай по этой памяти: называй людей по именам, вспоминай конкретные случаи.
+Если ответа в ней нет — так и скажи, но не отнекивайся, когда он есть.
 """
 
     media_block = f"\n\n[ФОРМАТ: {media_hint}]" if media_hint else ""
 
-    return f"""{knowledge_block}Последние сообщения в чате:
+    return f"""Последние сообщения в чате:
 {context}
-
+{knowledge_block}
 Новое сообщение для ответа: {message_text}{media_block}"""
 
 

@@ -553,10 +553,11 @@ class Brain:
             else:
                 system_prompt = self._situation_prompts.get(situation, self._system_prompt)
 
-            # Enhance context with rag facts
+            # rag_facts is NOT spliced in here — get_context_prompt() places it
+            # in its own block. Doing both put the same 40k-character blob in
+            # the prompt twice (measured: exactly 2x on every query), so every
+            # message with memory was billed double for nothing.
             enhanced_context = context
-            if rag_facts:
-                enhanced_context = f"ЗНАНИЯ О ЛЮДЯХ:\n{rag_facts}\n\n{context}"
 
             # Add avoid list if provided
             if avoid_responses:
