@@ -252,6 +252,14 @@ class BotConfig:
     # budget that still keeps the answer-bearing details (10000 already dropped
     # "Кирилл — взлом систем" and "Пан — C1 польский"); 0 disables the cap.
     lightrag_query_max_tokens: int = 14000
+    # What the SERVER assembles, not what reaches the prompt. LightRAG fills the
+    # budget in a fixed order — entity descriptions, relations, chat excerpts —
+    # so the fat hub descriptions are paid first and the excerpts get whatever
+    # is left. At 14000 that left room for ~6 excerpts; at 6000, for none at
+    # all. Latency is flat in this parameter (~1.1 s at 6000 and at 40000), so
+    # we ask wide and trim below.
+    lightrag_context_desc_cap: int = 1200    # chars per entity description
+    lightrag_context_max_chunks: int = 12    # chat excerpts kept
     lightrag_query_timeout: float = 35.0
     lightrag_insert_timeout: float = 15.0
 

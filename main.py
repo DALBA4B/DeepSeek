@@ -68,6 +68,8 @@ def build_rag_client(config: BotConfig) -> Optional[RagClient]:
         query_max_tokens=config.lightrag_query_max_tokens,
         query_timeout=config.lightrag_query_timeout,
         insert_timeout=config.lightrag_insert_timeout,
+        context_desc_cap=config.lightrag_context_desc_cap,
+        context_max_chunks=config.lightrag_context_max_chunks,
     )
 
 

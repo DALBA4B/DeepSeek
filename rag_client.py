@@ -31,9 +31,11 @@ Design notes
 """
 
 import asyncio
+import json
 import logging
+import re
 import time
-from typing import Optional
+from typing import List, Optional, Tuple
 
 import aiohttp
 
@@ -42,6 +44,146 @@ _rag_debug = logging.getLogger("ragdebug")
 
 # Refresh the token a bit before it actually expires, to avoid edge-case 401s
 _TOKEN_REFRESH_MARGIN_SECONDS = 60
+
+# ── Context compaction ───────────────────────────────────────────────
+#
+# LightRAG assembles the context in a fixed order — entity descriptions, then
+# relations, then chat excerpts — and cuts it at max_total_tokens from the
+# bottom. Descriptions are therefore paid first, and in this graph the hub
+# nodes carry 8-16k characters each (Максим Тян: 16184, 37% of it verbatim
+# repeats appended over successive imports, because LightRAG only re-summarises
+# a description once a merge pushes it past force_llm_summary_on_merge=8).
+#
+# Measured on 6 questions (logs/budget_sweep.log): at the old 14000-token cap
+# roughly half the budget went to descriptions and only ~6 chat excerpts
+# survived; at a 6000 cap the descriptions ate everything and ZERO excerpts came
+# back. Raising the cap costs no extra LightRAG latency (~1.1 s either way),
+# only prompt tokens downstream.
+#
+# So we ask for a wide context and do the cutting here instead: cap each
+# description and keep the top-N excerpts. Excerpts arrive ordered by relevance
+# to the query (entity order tracks relation order at corr +1.00 in global
+# mode, and relations are ranked by similarity), so a prefix keeps the best.
+#
+# Result at an identical prompt size (logs/trim_tune.log): 12 excerpts instead
+# of 6, spanning 8.3 months instead of 5.0.
+_SEP = "<SEP>"
+_SECTION = re.compile(
+    r"Knowledge Graph Data \(Entity\):\s*```json\n(.*?)```"
+    r"(.*?Knowledge Graph Data \(Relationship\):\s*```json\n.*?```.*?"
+    r"Document Chunks.*?```json\n)(.*?)(```)",
+    re.S,
+)
+
+
+def _json_lines(block: str) -> List[dict]:
+    """Parse the newline-delimited JSON records inside one fenced block."""
+    out = []
+    for line in block.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            # A description containing an unescaped brace. Rare, and dropping
+            # one record is better than discarding the whole context.
+            continue
+    return out
+
+
+def _shrink_description(desc: str, cap: int) -> str:
+    """
+    Cut one entity description down to `cap` characters.
+
+    Fragments are joined by <SEP>. Exact repeats are dropped first — they are
+    pure waste. What remains is taken longest-first rather than in order: the
+    long fragments are the LLM-written summaries, the short ones are
+    single-import scraps like "A participant who sent a photo".
+    """
+    frags = [f.strip() for f in desc.split(_SEP) if f.strip()]
+    unique = list(dict.fromkeys(frags))
+    kept: List[str] = []
+    used = 0
+    for frag in sorted(unique, key=len, reverse=True):
+        if used + len(frag) <= cap:
+            kept.append(frag)
+            used += len(frag)
+    if not kept and unique:
+        # A single fragment already exceeds the cap; keep a prefix of it.
+        kept = [unique[0][:cap]]
+    return _SEP.join(kept)
+
+
+def compact_context(context: str, desc_cap: int, max_chunks: int) -> Tuple[str, dict]:
+    """
+    Trim a raw LightRAG context so the prompt spends its budget on chat lines.
+
+    Args:
+        context:    Raw blob from /query with only_need_context=True.
+        desc_cap:   Max characters per entity description (0 = leave alone).
+        max_chunks: Max chat excerpts to keep (0 = keep all).
+
+    Returns:
+        (compacted context, stats dict). If the blob does not match the
+        expected layout — a LightRAG version change would do that — the input
+        is returned untouched, so a format drift degrades to today's behaviour
+        rather than to an empty context.
+    """
+    if not context or (desc_cap <= 0 and max_chunks <= 0):
+        return context, {}
+
+    match = _SECTION.search(context)
+    if not match:
+        _rag_debug.info("RAG-DEBUG [compact] layout not recognised, left as-is")
+        return context, {"recognised": False}
+
+    ent_block, middle, chunk_block, fence = match.groups()
+
+    entities = _json_lines(ent_block)
+    if desc_cap > 0 and entities:
+        rebuilt = []
+        for ent in entities:
+            ent = dict(ent)
+            ent["description"] = _shrink_description(
+                ent.get("description", ""), desc_cap
+            )
+            rebuilt.append(json.dumps(ent, ensure_ascii=False))
+        new_ent_block = "\n".join(rebuilt) + "\n"
+    else:
+        new_ent_block = ent_block
+
+    chunks = _json_lines(chunk_block)
+    if max_chunks > 0 and len(chunks) > max_chunks:
+        kept = chunks[:max_chunks]
+        new_chunk_block = "\n".join(
+            json.dumps(c, ensure_ascii=False) for c in kept
+        ) + "\n"
+    else:
+        kept = chunks
+        new_chunk_block = chunk_block
+
+    out = (
+        context[: match.start()]
+        + "Knowledge Graph Data (Entity):\n```json\n"
+        + new_ent_block
+        + "```"
+        + middle
+        + new_chunk_block
+        + fence
+        + context[match.end():]
+    )
+    stats = {
+        "recognised": True,
+        "entities": len(entities),
+        "chunks_in": len(chunks),
+        "chunks_kept": len(kept),
+        "desc_chars_before": len(ent_block),
+        "desc_chars_after": len(new_ent_block),
+        "chars_before": len(context),
+        "chars_after": len(out),
+    }
+    return out, stats
 
 
 class RagClientError(Exception):
@@ -58,9 +200,13 @@ class RagClient:
         password:       Auth password
         query_mode:     Retrieval mode (mix / hybrid / local / global / naive)
         query_top_k:    How many chunks/entities to retrieve per query
-        query_max_tokens: Cap on the size of the returned context (0 = no cap).
-            LightRAG otherwise returns everything it finds — tens of thousands
-            of characters that all end up in the prompt.
+        query_max_tokens: Cap asked of LightRAG (0 = no cap). This is the size
+            of the context the SERVER assembles, not what reaches the prompt —
+            see context_desc_cap. Asking wide is cheap: latency is flat in this
+            parameter, and the trimming below decides what is actually sent.
+        context_desc_cap:   Max chars per entity description after retrieval
+            (0 = no trimming, i.e. the pre-compaction behaviour).
+        context_max_chunks: Max chat excerpts kept after retrieval (0 = all).
         query_timeout:  Seconds to wait for a query answer
         insert_timeout: Seconds to wait for an insert acknowledgement
     """
@@ -75,6 +221,8 @@ class RagClient:
         query_max_tokens: int = 14000,
         query_timeout: float = 35.0,
         insert_timeout: float = 15.0,
+        context_desc_cap: int = 0,
+        context_max_chunks: int = 0,
     ) -> None:
         # Normalize: strip trailing slash, drop accidental /webui suffix
         url = base_url.strip().rstrip("/")
@@ -88,6 +236,8 @@ class RagClient:
         self.query_max_tokens = query_max_tokens
         self.query_timeout = query_timeout
         self.insert_timeout = insert_timeout
+        self.context_desc_cap = context_desc_cap
+        self.context_max_chunks = context_max_chunks
 
         # Reason the last retrieve() failed (timeout / network / HTTP error),
         # or None if it succeeded or simply found nothing. brain.py reads this
@@ -298,6 +448,18 @@ class RagClient:
         if not context:
             _rag_debug.info("RAG-DEBUG [lightrag http] normalized context is empty")
             return None
+
+        context, stats = compact_context(
+            context, self.context_desc_cap, self.context_max_chunks
+        )
+        if stats.get("recognised"):
+            _rag_debug.info(
+                "RAG-DEBUG [compact] %d entities, chunks %d->%d, "
+                "description chars %d->%d, total %d->%d",
+                stats["entities"], stats["chunks_in"], stats["chunks_kept"],
+                stats["desc_chars_before"], stats["desc_chars_after"],
+                stats["chars_before"], stats["chars_after"],
+            )
         return context
 
     async def insert(self, text: str, file_source: str = "telegram_chat") -> Optional[str]:

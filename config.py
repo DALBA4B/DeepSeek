@@ -190,7 +190,9 @@ def load_config() -> BotConfig:
         lightrag_api_password=os.getenv("LIGHTRAG_API_PASSWORD", ""),
         lightrag_query_mode=os.getenv("LIGHTRAG_QUERY_MODE", "mix"),
         lightrag_query_top_k=_get_optional_int("LIGHTRAG_QUERY_TOP_K", 20),
-        lightrag_query_max_tokens=_get_optional_int("LIGHTRAG_QUERY_MAX_TOKENS", 14000),
+        lightrag_query_max_tokens=_get_optional_int("LIGHTRAG_QUERY_MAX_TOKENS", 40000),
+        lightrag_context_desc_cap=_get_optional_int("LIGHTRAG_CONTEXT_DESC_CAP", 1200),
+        lightrag_context_max_chunks=_get_optional_int("LIGHTRAG_CONTEXT_MAX_CHUNKS", 12),
         lightrag_query_timeout=_get_optional_float("LIGHTRAG_QUERY_TIMEOUT", 35.0),
         lightrag_insert_timeout=_get_optional_float("LIGHTRAG_INSERT_TIMEOUT", 15.0),
 
