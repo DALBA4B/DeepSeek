@@ -44,16 +44,16 @@ Telegram Desktop -> chat -> ⋮ -> Export chat history -> format **JSON**
 Usage
 -----
     # dry run: parse + group + show what WOULD be inserted, no network
-    python import_history.py --file result.json --dry-run
+    python tools/import_history.py --file result.json --dry-run
 
     # import everything (resumes automatically if interrupted)
-    python import_history.py --file result.json
+    python tools/import_history.py --file result.json
 
     # one month at a time (recommended: verify /profile between months)
-    python import_history.py --file result.json --since 2026-03-01 --until 2026-03-31
+    python tools/import_history.py --file result.json --since 2026-03-01 --until 2026-03-31
 
     # re-import days already done (ignore progress file)
-    python import_history.py --file result.json --force
+    python tools/import_history.py --file result.json --force
 
 Notes
 -----
@@ -71,6 +71,12 @@ import sys
 from collections import Counter, defaultdict
 from datetime import date, datetime
 from typing import Dict, List, Optional
+
+from pathlib import Path
+
+# This tool lives in tools/, one level below the bot's modules. Put the project
+# root on sys.path so it runs the same from anywhere: python tools/import_history.py
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from config import load_config
 from models import BotConfig, ChatMessage

@@ -8,13 +8,20 @@ of into a chat the bot is in. The script prints the sticker's pack name
 Responder's load_sticker_set() call. Stop with Ctrl+C once you have it.
 
 Usage:
-    python sticker_finder.py
+    python tools/sticker_finder.py
 """
 
 import logging
+import sys
 
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
+
+from pathlib import Path
+
+# This tool lives in tools/, one level below the bot's modules. Put the project
+# root on sys.path so it runs the same from anywhere.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from config import get_config
 

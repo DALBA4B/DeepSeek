@@ -28,9 +28,9 @@ Safety
 
 Usage
 -----
-    python graph_merge.py --dry-run          # show the plan
-    python graph_merge.py                    # apply it
-    python graph_merge.py --only "Заза"      # just the groups matching a name
+    python tools/graph_merge.py --dry-run          # show the plan
+    python tools/graph_merge.py                    # apply it
+    python tools/graph_merge.py --only "Заза"      # just the groups matching a name
 """
 
 import argparse
@@ -44,6 +44,12 @@ from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
 import aiohttp
+
+from pathlib import Path
+
+# This tool lives in tools/, one level below the bot's modules. Put the project
+# root on sys.path so it runs the same from anywhere: python tools/graph_merge.py
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from config import load_config
 from models import BotConfig

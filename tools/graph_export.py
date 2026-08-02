@@ -21,9 +21,9 @@ connections) and `file_path` (which day's document introduced them). Edges carry
 
 Usage
 -----
-    python graph_export.py                  # -> graph.gexf
-    python graph_export.py --out my.gexf
-    python graph_export.py --min-weight 2   # drop one-off connections upfront
+    python tools/graph_export.py                  # -> graph.gexf
+    python tools/graph_export.py --out my.gexf
+    python tools/graph_export.py --min-weight 2   # drop one-off connections upfront
 """
 
 import argparse
@@ -35,6 +35,12 @@ import urllib.parse
 from typing import Dict, List, Optional
 
 import aiohttp
+
+from pathlib import Path
+
+# This tool lives in tools/, one level below the bot's modules. Put the project
+# root on sys.path so it runs the same from anywhere: python tools/graph_export.py
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from config import load_config
 from models import BotConfig

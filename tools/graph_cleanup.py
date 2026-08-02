@@ -24,9 +24,9 @@ meaning, so they are deleted rather than merged.
 
 Usage
 -----
-    python graph_cleanup.py --dry-run     # show what would happen
-    python graph_cleanup.py               # apply
-    python graph_cleanup.py --skip-junk   # merges only
+    python tools/graph_cleanup.py --dry-run     # show what would happen
+    python tools/graph_cleanup.py               # apply
+    python tools/graph_cleanup.py --skip-junk   # merges only
 """
 
 import argparse
@@ -36,6 +36,12 @@ import sys
 from typing import List, Optional
 
 import aiohttp
+
+from pathlib import Path
+
+# This tool lives in tools/, one level below the bot's modules. Put the project
+# root on sys.path so it runs the same from anywhere: python tools/graph_cleanup.py
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from config import load_config
 from graph_merge import _build_rag_client, apply_merge, fetch_labels, inspect_node

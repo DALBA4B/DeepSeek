@@ -37,7 +37,7 @@ logging.getLogger("telegram.ext._application").setLevel(logging.WARNING)
 
 # Sticker packs the bot picks from (combined). Add more short names here to
 # give the bot a wider variety — find a pack's exact short name (Telegram's
-# in-app display name doesn't always match) with sticker_finder.py.
+# in-app display name doesn't always match) with tools/sticker_finder.py.
 STICKER_PACKS = [
     "userpack7845974_by_stickrubot",
     "aye3_by_APT_bot",
@@ -501,7 +501,7 @@ class DeepSeekBot:
         # supported — load_sticker_set() accumulates across calls instead of
         # replacing, so the bot picks from all of them combined. Find a pack's
         # exact name (Telegram short names don't always match what's shown in
-        # the app) with sticker_finder.py.
+        # the app) with tools/sticker_finder.py.
         for sticker_pack_name in STICKER_PACKS:
             try:
                 logger.info(f"Loading sticker pack '{sticker_pack_name}'...")

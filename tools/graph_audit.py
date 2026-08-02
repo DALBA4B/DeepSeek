@@ -24,9 +24,9 @@ What it looks for
 
 Usage
 -----
-    python graph_audit.py                    # full audit -> graph_audit_report.md
-    python graph_audit.py --skip-llm         # structural checks only, no API cost
-    python graph_audit.py --people 3         # LLM pass over top-3 people only
+    python tools/graph_audit.py                    # full audit -> graph_audit_report.md
+    python tools/graph_audit.py --skip-llm         # structural checks only, no API cost
+    python tools/graph_audit.py --people 3         # LLM pass over top-3 people only
 """
 
 import argparse
@@ -42,6 +42,12 @@ from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
 import aiohttp
+
+from pathlib import Path
+
+# This tool lives in tools/, one level below the bot's modules. Put the project
+# root on sys.path so it runs the same from anywhere: python tools/graph_audit.py
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from config import load_config
 from models import BotConfig
