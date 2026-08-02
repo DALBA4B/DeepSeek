@@ -97,3 +97,11 @@ graph.gexf
 # moment anything is imported. Regenerate with graph_merge.py / graph_cleanup.py.
 merge_plan.json
 desc_snapshot.json
+
+# Throwaway probes: one-off scripts and their output, written to answer a single
+# question about the live graph (which mode finds more, where the context budget
+# goes). Kept locally because re-running one is how a measurement gets rechecked,
+# but they hardcode this graph's state and mean nothing in the repo.
+_*.py
+_*.json
+_*.txt

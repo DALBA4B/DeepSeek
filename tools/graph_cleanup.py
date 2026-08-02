@@ -7,11 +7,11 @@ Why this exists
 graph_merge.py groups entities whose names match after folding case and
 punctuation. That misses two large classes of duplicate in this graph:
 
-* Transliteration. `summary_language: English` makes the extractor render
-  proper nouns in Latin script some of the time, so one person becomes many
-  nodes: "Максим Тян" (2967 relations) plus "Maxim Tyan", "Maksim Tyan",
-  "Maksym Tian" and three more, together holding ~440 relations the bot never
-  finds when asked about him.
+* Transliteration. Early imports ran with `summary_language: English` (since
+  switched to Russian), so the extractor rendered proper nouns in Latin script
+  some of the time and one person became many nodes: "Максим Тян" (2967
+  relations) plus "Maxim Tyan", "Maksim Tyan", "Maksym Tian" and three more,
+  together holding ~440 relations the bot never finds when asked about him.
 * Nicknames. "Заза" and "Зазик Лайф" are one person; no amount of string
   folding will say so.
 
@@ -32,6 +32,7 @@ Usage
 import argparse
 import asyncio
 import logging
+import re
 import sys
 from typing import List, Optional
 
@@ -74,6 +75,36 @@ _JUNK: List[str] = [
     "[Фото]",
     "ᅠ ︎ ︎ ︎ ︎ ᅠ ︎ ︎ ︎ ︎ ᅠ",       # invisible-character node
 ]
+
+# Quantities the extractor mistook for entities: "10 км", "700 грн", "128GB",
+# "2024 год", "16:16". They are measurements, not things — the meaning lives in
+# whatever event they were attached to, and that survives the delete. Left as
+# patterns rather than a fixed list because every import creates a fresh crop.
+#
+# Deliberately narrow: the label must be JUST a number (optionally with a unit).
+# Anything with a real word in it ("100 Km Hike", "2-й батальон 72-ї ОМБр") is a
+# possible real entity and is left alone — run --dry-run to review what matched.
+_UNIT = (
+    r"(?:грн|uah|usd|eur|руб|долл|dollars?|hryvnia|км|km|м|m|см|cm|мм|mm|"
+    r"кг|kg|г|g|л|l|мл|ml|тб|tb|гб|gb|мб|mb|мач|mah|hz|гц|fps|k|к|"
+    r"ч|h|час(?:а|ов)?|hours?|мин|min|минут\w*|сек|s|градус\w*|degrees?|"
+    r"%|процент\w*|тыс\w*|млн|млрд|million|billion)"
+)
+_NUM = r"[\d]+(?:[.,\s]\d+)*"
+
+_JUNK_PATTERNS = [
+    re.compile(r"^[\d\s.,:%\-–—/]+$"),                             # 1600, 15%, 15-0, 2024-2025
+    re.compile(r"(?i)^(19|20)\d\d\s*(год|year|г\.?)?$"),           # 2024 год, 2021 Year
+    re.compile(r"^\d{1,2}[:.]\d{2}(-\d{1,2}[:.]\d{2})?$"),         # 16:16
+    re.compile(r"^\d{4}-\d{2}-\d{2}"),                             # 2024-08-11 23:22-23:22
+    re.compile(r"(?i)^[$€₴]?\s*" + _NUM + r"\s*" + _UNIT + r"\.?$"),  # 700 грн, 128GB, 10 км
+    re.compile(r"(?i)^[$€₴]\s*" + _NUM + r"$"),                    # $500
+]
+
+
+def find_junk(labels: List[str]) -> List[str]:
+    """Labels that are bare quantities/dates rather than entities."""
+    return [l for l in labels if any(p.match(l.strip()) for p in _JUNK_PATTERNS)]
 
 
 async def delete_entity(rag: RagClient, name: str) -> bool:
@@ -129,10 +160,13 @@ async def run(args, config: BotConfig) -> int:
 
     if not args.skip_junk:
         logger.info("=== Junk deletion ===")
-        for name in _JUNK:
-            if name not in present:
-                continue
-            logger.info("  delete %r", name)
+        targets = [n for n in _JUNK if n in present]
+        targets += [n for n in find_junk(sorted(present)) if n not in _JUNK]
+        logger.info("  %d junk node(s): %d listed, %d matched by pattern",
+                    len(targets), sum(1 for n in _JUNK if n in present),
+                    len(targets) - sum(1 for n in _JUNK if n in present))
+        for i, name in enumerate(targets, 1):
+            logger.info("  [%d/%d] delete %r", i, len(targets), name)
             if args.dry_run:
                 continue
             if await delete_entity(rag, name):

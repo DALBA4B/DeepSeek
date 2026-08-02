@@ -61,9 +61,15 @@ logger = logging.getLogger("graph_merge")
 # Entity names that normalize alike but are genuinely different things. Listed
 # as sets: if a duplicate group contains members from two different sets here,
 # the group is skipped and reported for manual review.
+#
+# Verified against the node descriptions 2026-08-01: the misspelled Latin forms
+# describe a chat participant ("owns an iPad Pro 2018", "reacts with sarcasm to
+# stories about the village"), while DeepSeek/Deep Seek describe the Chinese
+# model ("surpassed ChatGPT in benchmarks"). So the typos belong with the bot.
 _NEVER_MERGE = [
-    {"дип сик"},                    # the bot
-    {"deepseek", "deep seek"},      # the AI model discussed in chat
+    {"дип сик", "дипсик", "дип сикич",          # the bot
+     "deep sick", "dip syk", "deep sik"},       # ...as misheard by the extractor
+    {"deepseek", "deep seek"},                  # the AI model discussed in chat
 ]
 
 _CONCURRENCY = 4
