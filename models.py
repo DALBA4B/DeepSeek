@@ -222,6 +222,7 @@ class BotConfig:
     media_response_probability: float = 0.05  # chance of an unprompted sticker/reaction reply
     gif_response_probability: float = 0.015  # chance of an unprompted GIF reply (rarer — network round-trip)
     silent_reaction_probability: float = 0.03  # chance of a reaction-only "ack" instead of full silence on grade 0
+    grade1_response_probability: float = 0.30  # chance of actually responding on grade=1 (skip the rest)
     
     # Giphy settings
     giphy_api_url: str = "https://api.giphy.com/v1/gifs/search"

@@ -172,6 +172,7 @@ def load_config() -> BotConfig:
         media_response_probability=_get_optional_float("MEDIA_RESPONSE_PROBABILITY", 0.05),
         gif_response_probability=_get_optional_float("GIF_RESPONSE_PROBABILITY", 0.015),
         silent_reaction_probability=_get_optional_float("SILENT_REACTION_PROBABILITY", 0.03),
+        grade1_response_probability=_get_optional_float("GRADE1_RESPONSE_PROBABILITY", 0.30),
         
         # Giphy settings
         giphy_api_url=os.getenv("GIPHY_API_URL", "https://api.giphy.com/v1/gifs/search"),

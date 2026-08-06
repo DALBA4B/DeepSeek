@@ -409,6 +409,11 @@ class Brain:
                 return f"{SILENT_REACT_PREFIX}{','.join(pool)}"
             return None
 
+        # Throttle grade=1 — short reactions fire only ~30% of the time to
+        # avoid the bot chiming in on every casual message.
+        if result.grade == 1 and random.random() >= self.config.grade1_response_probability:
+            return None
+
         # From here on the bot is committed to producing a real answer, so this
         # is the first honest moment to show "typing". A failing indicator must
         # never cost us the reply — it's cosmetic.
