@@ -497,10 +497,11 @@ class DeepSeekBot:
             await context.bot.send_message(chat_id=chat_id, text="🤷 Ничего не нашёл в памяти по этому запросу.")
             return
 
-        if len(answer) > 4000:
-            answer = answer[:3997] + "..."
-
-        await context.bot.send_message(chat_id=chat_id, text=f"🧠 {answer}")
+        chunk_size = 4000
+        parts = [answer[i:i+chunk_size] for i in range(0, len(answer), chunk_size)]
+        for i, part in enumerate(parts):
+            prefix = "🧠 " if i == 0 else ""
+            await context.bot.send_message(chat_id=chat_id, text=f"{prefix}{part}")
 
     # ------------------------------------------------------------------ #
     # Lifecycle

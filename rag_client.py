@@ -497,6 +497,7 @@ class RagClient:
         if isinstance(response, list):
             response = "\n".join(str(x) for x in response)
         response = str(response).strip()
+        logger.info("query_direct: query=%r len=%d response_start=%r", query, len(response), response[:120])
         return response or None
 
     async def insert(self, text: str, file_source: str = "telegram_chat") -> Optional[str]:
