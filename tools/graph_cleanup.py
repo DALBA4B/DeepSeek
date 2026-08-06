@@ -74,6 +74,9 @@ _JUNK: List[str] = [
     "[Кружок]",                     # media placeholders promoted to entities
     "[Фото]",
     "ᅠ ︎ ︎ ︎ ︎ ᅠ ︎ ︎ ︎ ︎ ᅠ",       # invisible-character node
+    # single-character noise from 2025 import
+    "X", "Z", "А", "В", "Г", "Н", "С", "Ф", "ф",
+    "reply",                        # chat mechanics leaked as entity
 ]
 
 # Quantities the extractor mistook for entities: "10 км", "700 грн", "128GB",
