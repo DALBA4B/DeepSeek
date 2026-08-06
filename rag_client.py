@@ -462,6 +462,43 @@ class RagClient:
             )
         return context
 
+    async def query_direct(self, query: str) -> Optional[str]:
+        """
+        Query LightRAG and get a fully synthesized answer (only_need_context=False).
+        Unlike retrieve(), this returns LightRAG's own generated response, not raw context.
+        Used by the !память trigger so users get a readable answer directly.
+        """
+        if not query or not query.strip():
+            return None
+
+        payload = {
+            "query": query,
+            "mode": self.query_mode,
+            "only_need_context": False,
+            "top_k": self.query_top_k,
+        }
+        if self.query_max_tokens:
+            payload["max_total_tokens"] = self.query_max_tokens
+
+        try:
+            data = await self._request(
+                "POST", "/query", json=payload, timeout=self.query_timeout
+            )
+        except RagClientError as e:
+            logger.warning(f"LightRAG query_direct failed (query={query!r}): {e}")
+            return None
+
+        response = (
+            data.get("response")
+            or data.get("answer")
+            or data.get("data")
+            or ""
+        )
+        if isinstance(response, list):
+            response = "\n".join(str(x) for x in response)
+        response = str(response).strip()
+        return response or None
+
     async def insert(self, text: str, file_source: str = "telegram_chat") -> Optional[str]:
         """
         Insert a block of text into the knowledge base. LightRAG will chunk

@@ -474,6 +474,34 @@ class DeepSeekBot:
             chat_id=chat_id, text=f"Настроение насчёт {target_name}: {mood_text}"
         )
 
+    async def _handle_memory_trigger(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /память <запрос> — query LightRAG directly and return synthesized answer."""
+        if not update.effective_chat or not update.message:
+            return
+
+        chat_id = update.effective_chat.id
+        query = " ".join(context.args).strip() if context.args else ""
+
+        if not query:
+            await context.bot.send_message(chat_id=chat_id, text="Напиши что искать: !память <вопрос>")
+            return
+
+        if self.rag_client is None:
+            await context.bot.send_message(chat_id=chat_id, text="ℹ️ LightRAG не настроен")
+            return
+
+        async with keep_typing(context.bot, chat_id):
+            answer = await self.rag_client.query_direct(query)
+
+        if not answer:
+            await context.bot.send_message(chat_id=chat_id, text="🤷 Ничего не нашёл в памяти по этому запросу.")
+            return
+
+        if len(answer) > 4000:
+            answer = answer[:3997] + "..."
+
+        await context.bot.send_message(chat_id=chat_id, text=f"🧠 {answer}")
+
     # ------------------------------------------------------------------ #
     # Lifecycle
     # ------------------------------------------------------------------ #
@@ -550,6 +578,7 @@ class DeepSeekBot:
             self._app.add_handler(CommandHandler("ragnow", self._cmd_ragnow))
             self._app.add_handler(CommandHandler("profile", self._cmd_profile))
             self._app.add_handler(CommandHandler("mood", self._cmd_mood))
+            self._app.add_handler(CommandHandler("mem", self._handle_memory_trigger))
 
             self._app.post_init = self._startup_handler
             self._app.post_shutdown = self._shutdown_handler
