@@ -777,8 +777,8 @@ class Brain:
         ranges = {
             0: TokenRange(0, 50),        # skip (shouldn't reach generate)
             1: TokenRange(20, 150),       # short reaction
-            2: TokenRange(150, 400),      # normal answer
-            3: TokenRange(300, 800),      # deep, detailed
+            2: TokenRange(150, 700),      # normal answer
+            3: TokenRange(400, 1500),     # deep, detailed
         }
         return ranges.get(grade, TokenRange(150, 400))
 

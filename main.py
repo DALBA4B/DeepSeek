@@ -13,7 +13,7 @@ import os
 import signal
 import subprocess
 import sys
-from logging.handlers import RotatingFileHandler
+from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
 from typing import List, Optional
 
 from telegram import Update
@@ -578,6 +578,21 @@ def setup_logging(config: BotConfig) -> None:
             "bot.log", maxBytes=10 * 1024 * 1024, backupCount=3, encoding="utf-8"
         )
         handlers.append(file_handler)
+    # Persistent logs: one file per day, kept for LOG_RETENTION_DAYS days (default 30).
+    # Enable with PERSISTENT_LOG=true on Railway, mount a volume at /app/logs/.
+    if os.getenv("PERSISTENT_LOG", "false").lower() in ("true", "1", "yes"):
+        log_dir = os.getenv("PERSISTENT_LOG_DIR", "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        retention_days = int(os.getenv("LOG_RETENTION_DAYS", "30"))
+        timed_handler = TimedRotatingFileHandler(
+            os.path.join(log_dir, "bot.log"),
+            when="midnight",
+            backupCount=retention_days,
+            encoding="utf-8",
+            utc=True,
+        )
+        timed_handler.suffix = "%Y-%m-%d"
+        handlers.append(timed_handler)
 
     logging.basicConfig(
         format=config.log_format,
