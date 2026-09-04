@@ -6,7 +6,7 @@ Loads settings from environment variables with validation and type safety.
 
 import os
 import logging
-from typing import Optional, List
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -141,9 +141,6 @@ def load_config() -> BotConfig:
         giphy_api_key=_get_required_env("GIPHY_API_KEY"),
         firebase_cred_path=_get_firebase_credentials(),
 
-        # Optional API keys (used by V2 features such as LightRAG embeddings)
-        openai_api_key=os.getenv("OPENAI_API_KEY"),
-        
         # Bot settings
         bot_name=os.getenv("BOT_NAME", "Вася"),
         chat_id=_get_optional_int("CHAT_ID"),
@@ -166,8 +163,6 @@ def load_config() -> BotConfig:
         classifier_retry_base_delay=_get_optional_float("CLASSIFIER_RETRY_BASE_DELAY", 0.4),
 
         # Response settings
-        random_response_probability=_get_optional_float("RANDOM_RESPONSE_PROBABILITY", 0.1),
-        use_smart_respond=os.getenv("USE_SMART_RESPOND", "false").lower() in ("true", "1", "yes"),
         text_only_mode=os.getenv("TEXT_ONLY_MODE", "false").lower() in ("true", "1", "yes"),
         media_response_probability=_get_optional_float("MEDIA_RESPONSE_PROBABILITY", 0.05),
         gif_response_probability=_get_optional_float("GIF_RESPONSE_PROBABILITY", 0.015),

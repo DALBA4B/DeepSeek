@@ -6,7 +6,6 @@ mock _call_llm directly (no aiohttp/real network involved anywhere here).
 
 import json
 
-import pytest
 
 from conversation_analyzer import ConversationAnalyzer, ClassificationResult, _MessageContext
 from retry import DeepSeekHTTPError

@@ -17,7 +17,6 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 
 from models import ChatMessage, UserInfo, BotConfig
-from prompts import FALLBACK_RESPONSES
 from utils import get_now, to_aware
 
 logger = logging.getLogger(__name__)
@@ -230,11 +229,6 @@ class Memory:
         )
 
     @property
-    def short_term_memory(self) -> Deque[ChatMessage]:
-        """Get short-term memory (for backward compatibility)."""
-        return self._short_term
-
-    @property
     def storage(self) -> Optional[MemoryStorage]:
         """Get storage backend for other modules."""
         return self._storage
@@ -344,22 +338,6 @@ class Memory:
         messages_list = list(self._short_term)
         return messages_list[-count:] if messages_list else []
 
-    def get_context(self) -> str:
-        """
-        Format recent messages as context string for DeepSeek API.
-        Includes both user messages and bot's own responses.
-
-        Returns:
-            Formatted string like "User1: message text\\nBot: response\\n..."
-        """
-        recent = self.get_recent()
-        
-        if not recent:
-            return FALLBACK_RESPONSES["no_context"]
-
-        context_lines = [msg.to_context_line() for msg in recent]
-        return "\n".join(context_lines)
-
     def get_recent_context_lines(self) -> List[str]:
         """
         Return recent messages already formatted as context lines.
@@ -458,30 +436,6 @@ class Memory:
         messages.sort(key=lambda m: m.timestamp)
         return messages
 
-    def clear_short_memory(self) -> None:
-        """Clear short-term memory (useful for testing)."""
-        self._short_term.clear()
-        logger.info("Short-term memory cleared")
-    
-    def get_message_count(self) -> int:
-        """Get current number of messages in short-term memory."""
-        return len(self._short_term)
-    
-    def get_user_messages_today(self, user_id: int) -> List[ChatMessage]:
-        """
-        Get all messages from a specific user for the current day.
-        Retrieves from _daily_log ensuring full day context.
-        
-        Args:
-            user_id: Telegram user ID
-            
-        Returns:
-            List of user's messages
-        """
-        if hasattr(self, '_daily_log'):
-            return [msg for msg in self._daily_log if msg.user_id == user_id]
-        return [msg for msg in self._short_term if msg.user_id == user_id]
-    
     def bot_responded_recently(self, within_last_n: int = 3) -> bool:
         """
         Check if the bot responded within the last N messages.
@@ -495,46 +449,3 @@ class Memory:
         """
         recent = list(self._short_term)[-within_last_n:]
         return any(msg.user_id == self.BOT_USER_ID for msg in recent)
-    
-    def get_last_bot_response(self) -> Optional[str]:
-        """
-        Get the last response from the bot.
-        
-        Returns:
-            Last bot response text or None
-        """
-        for msg in reversed(list(self._short_term)):
-            if msg.user_id == self.BOT_USER_ID:
-                return msg.text
-        return None
-
-    def get_daily_log(self) -> List[ChatMessage]:
-        """
-        Get all messages from daily log.
-        
-        Returns:
-            List of all messages from today
-        """
-        if hasattr(self, '_daily_log'):
-            return list(self._daily_log)
-        return []
-
-    def clear_daily_log(self) -> None:
-        """
-        Clear daily log of messages older than 24 hours (or since last midnight).
-        Used to prevent RAM from growing indefinitely.
-        """
-        if hasattr(self, '_daily_log'):
-            # Keep messages from current day (since midnight, in configured timezone).
-            # Normalize each timestamp to aware-in-config-tz so naive legacy timestamps
-            # compare correctly against the aware midnight boundary.
-            now = get_now(self.config.timezone)
-            today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
-
-            self._daily_log = [
-                msg for msg in self._daily_log
-                if to_aware(msg.timestamp, self.config.timezone) >= today_midnight
-            ]
-
-            self._last_log_clear = now
-            logger.info(f"Daily log pruned. Retained {len(self._daily_log)} messages.")

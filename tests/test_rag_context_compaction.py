@@ -12,7 +12,6 @@ dumber rather than crash.
 """
 import json
 
-import pytest
 
 from rag_client import compact_context, _shrink_description
 

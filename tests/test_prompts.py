@@ -1,7 +1,6 @@
 # tests/test_prompts.py
 """Unit tests for prompts.get_name_variations() — pure string logic."""
 
-import pytest
 
 from prompts import get_name_variations
 

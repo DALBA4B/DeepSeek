@@ -89,7 +89,6 @@ python main.py
 ├── requirements-dev.txt    # + pytest для разработки/тестов
 ├── pytest.ini              # Конфиг pytest (asyncio_mode, pythonpath)
 ├── railway.json             # Конфиг деплоя на Railway
-├── render.yaml               # Конфиг деплоя на Render
 └── README.md               # Этот файл
 ```
 

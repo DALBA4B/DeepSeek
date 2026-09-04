@@ -18,7 +18,6 @@ Design principles
 * Fully async (aiohttp) so the event loop is never blocked.
 """
 
-import asyncio
 import json
 import logging
 import time

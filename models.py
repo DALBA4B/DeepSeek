@@ -20,33 +20,6 @@ class ResponseType(Enum):
     STICKER = "sticker"
 
 
-class InterestStatus(Enum):
-    """Status of user interests (likes or dislikes)."""
-    LIKES = "likes"
-    DISLIKES = "dislikes"
-
-
-@dataclass
-class InterestEntry:
-    """
-    A single interest entry with history tracking.
-    Allows versioning of interest changes (user changes mind).
-    """
-    name: str
-    status: InterestStatus
-    added_at: datetime = field(default_factory=lambda: get_now("UTC"))
-    current: bool = True  # Is this the current status for this interest?
-    
-    def to_dict(self) -> dict:
-        """Convert to dictionary for Firebase storage."""
-        return {
-            "name": self.name,
-            "status": self.status.value,
-            "added_at": self.added_at.isoformat(),
-            "current": self.current
-        }
-
-
 @dataclass
 class TokenRange:
     """Token range for dynamic response length."""
@@ -176,9 +149,6 @@ class BotConfig:
     giphy_api_key: str
     firebase_cred_path: str
 
-    # Optional API keys (V2 features such as LightRAG embeddings)
-    openai_api_key: Optional[str] = None
-    
     # Bot settings
     bot_name: str = "Вася"
     chat_id: Optional[int] = None
@@ -199,8 +169,6 @@ class BotConfig:
     classifier_retry_base_delay: float = 0.4
 
     # Response settings
-    random_response_probability: float = 0.1
-    use_smart_respond: bool = False  # Use AI to decide whether to respond (costs API calls)
     text_only_mode: bool = False  # Only text responses (no stickers, GIFs, reactions)
     media_response_probability: float = 0.05  # chance of an unprompted sticker/reaction reply
     gif_response_probability: float = 0.015  # chance of an unprompted GIF reply (rarer — network round-trip)

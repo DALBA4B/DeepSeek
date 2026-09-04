@@ -15,7 +15,7 @@ from typing import Awaitable, Callable, Deque, Dict, Hashable, List, Optional, T
 
 from openai import OpenAI
 
-from models import BotConfig, ChatMessage, ParsedResponse, TokenRange
+from models import BotConfig, TokenRange
 from prompts import (
     get_system_prompt,
     get_system_prompt_for_situation,
@@ -25,8 +25,8 @@ from prompts import (
     GIF_REQUEST_KEYWORDS,
     STICKER_REQUEST_KEYWORDS,
 )
-from rag_client import RagClient, RagClientError
-from conversation_analyzer import ConversationAnalyzer, ClassificationResult, _MessageContext
+from rag_client import RagClient
+from conversation_analyzer import ConversationAnalyzer, _MessageContext
 from retry import retry_sync
 
 logger = logging.getLogger(__name__)

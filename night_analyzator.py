@@ -127,30 +127,6 @@ class TaskScheduler:
             self._task_handle.cancel()
             self._task_handle = None
         logger.info("Scheduler stopped")
-    
-    async def run_task_now(self, name: str) -> bool:
-        """
-        Manually run a scheduled task immediately.
-        
-        Args:
-            name: Task name to run
-            
-        Returns:
-            True if task ran successfully
-        """
-        if name not in self._tasks:
-            logger.error(f"Task '{name}' not found")
-            return False
-        
-        try:
-            logger.info(f"Manually running task: {name}")
-            await self._tasks[name]["callback"]()
-            self._tasks[name]["last_run"] = datetime.now(self._timezone)
-            logger.info(f"Task '{name}' completed successfully")
-            return True
-        except Exception as e:
-            logger.error(f"Error running task '{name}': {e}")
-            return False
 
 
 class RagIngestTask:
