@@ -26,7 +26,7 @@ from brain import Brain, SILENT_REACT_PREFIX
 from responder import Responder, ResponseParser
 from rag_client import RagClient
 from rag_ingestor import RagIngestor
-from night_analyzator import TaskScheduler, RagIngestTask
+from night_analyzer import TaskScheduler, RagIngestTask
 from utils import keep_typing, start_typing, stop_typing
 
 logger = logging.getLogger(__name__)

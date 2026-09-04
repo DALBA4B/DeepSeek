@@ -83,7 +83,7 @@ python main.py
 ├── rag_ingestor.py         # Ночной pipeline: сбор → группировка по времени → insert
 ├── retry.py                # Ретраи/backoff для сетевых вызовов DeepSeek (без внешних зависимостей)
 ├── responder.py            # Отправка разных типов ответов (текст/реакция/гиф/стикер)
-├── night_analyzator.py     # Планировщик + RagIngestTask (ночная индексация)
+├── night_analyzer.py       # Планировщик + RagIngestTask (ночная индексация)
 ├── tests/                  # Юнит-тесты (pytest + pytest-asyncio)
 ├── tools/                  # Утилиты: импорт истории Telegram, экспорт графа LightRAG в Gephi, поиск имён стикерпаков
 ├── requirements.txt        # Зависимости Python
