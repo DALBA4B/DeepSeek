@@ -656,11 +656,13 @@ class Brain:
     @staticmethod
     def _tokens_for_grade(grade: int) -> TokenRange:
         """Map grade 0-3 to token budget."""
+        # Max values have headroom: at grade 2 max=700 ~10% of replies were
+        # cut off mid-word (measured on 2026 chat history).
         ranges = {
             0: TokenRange(0, 50),        # skip (shouldn't reach generate)
             1: TokenRange(20, 150),       # short reaction
-            2: TokenRange(150, 700),      # normal answer
-            3: TokenRange(400, 1500),     # deep, detailed
+            2: TokenRange(150, 900),      # normal answer
+            3: TokenRange(400, 1800),     # deep, detailed
         }
         return ranges.get(grade, TokenRange(150, 400))
 
