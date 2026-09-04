@@ -490,25 +490,6 @@ def get_name_variations(bot_name: str) -> List[str]:
     return [v for v in variants if len(v) >= 3]
 
 
-# Continuation triggers - words that continue the conversation without bot name mention
-# Used when bot_responded_recently() is True
-CONTINUATION_TRIGGERS: List[str] = [
-    # Direct continuation
-    "ещё", "еще", "ещё раз", "еще раз",
-    "продолжай", "дальше", "и?", "а потом",
-    "расскажи", "рассказывай",
-    # Clarification
-    "что?", "чего?", "в смысле", "это как",
-    "а что насчёт", "а что если", "а как же",
-    # Reaction requests
-    "другую", "другой", "ещё одну", "новую",
-    "ну давай", "ну", "ну ка",
-    # Agreement/disagreement continuation
-    "согласен", "не согласен", "точно", "именно",
-    "а я думаю", "по-моему", "мне кажется",
-]
-
-
 # Insult/provocation stems used by ConversationAnalyzer._is_attack_on_bot() as
 # a hard override on top of the LLM classifier — a message is only flagged as
 # an "attack on the bot" when it BOTH mentions the bot (get_name_variations)

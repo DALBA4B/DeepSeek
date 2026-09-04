@@ -15,13 +15,12 @@ from typing import Awaitable, Callable, Deque, Dict, Hashable, List, Optional, T
 
 from openai import OpenAI
 
-from models import BotConfig, ChatMessage, ParsedResponse, RequestComplexity, TokenRange
+from models import BotConfig, ChatMessage, ParsedResponse, TokenRange
 from prompts import (
     get_system_prompt,
     get_system_prompt_for_situation,
     get_context_prompt,
     get_name_variations,
-    CONTINUATION_TRIGGERS,
     FALLBACK_RESPONSES,
     GIF_REQUEST_KEYWORDS,
     STICKER_REQUEST_KEYWORDS,
@@ -211,47 +210,6 @@ def _is_media_response(text: str) -> bool:
     return prefix.startswith(("GIPHY:", "REACT:", "STICKER:"))
 
 
-class RequestClassifier:
-    """
-    Classifies message complexity to determine appropriate response length.
-    Uses keyword matching and pattern detection.
-    """
-
-    SIMPLE_KEYWORDS = [
-        'да?', 'нет?', 'ок?', 'норм?', 'реакц', 'поставь', 'лайк',
-        'согласен', 'да/нет', 'коротко', 'одним словом', 'быстро',
-        'ещё', 'еще', 'another', 'more', 'продолжай',
-        'шутка', 'анекдот', 'шутку', 'прикол', 'рассмеши', 'рофл',
-        'как дела', 'чо делаешь', 'что делаешь', 'как сам', 'чо как',
-        'ну', 'ага', 'понял', 'спс', 'благодарю', 'ок', 'окей',
-        'круто', 'класс', 'топ', 'огонь', 'красава',
-    ]
-
-    COMPLEX_KEYWORDS = [
-        'расскажи', 'объясни', 'почему', 'как работает', 'подробно',
-        'план', 'список', 'пошагово', 'детально', 'разбери',
-        'история', 'напиши текст', 'сочини', 'придумай историю',
-        'что думаешь о', 'мнение', 'проанализируй', 'сравни',
-        'помоги', 'посоветуй', 'как сделать', 'как мне', 'подскажи',
-        'научи', 'покажи как', 'объясни как',
-    ]
-
-    @classmethod
-    def classify(cls, message: str) -> RequestComplexity:
-        msg_lower = message.lower()
-        for keyword in cls.SIMPLE_KEYWORDS:
-            if keyword in msg_lower:
-                return RequestComplexity.SIMPLE
-        for keyword in cls.COMPLEX_KEYWORDS:
-            if keyword in msg_lower:
-                return RequestComplexity.COMPLEX
-        if len(message) > 100 and '?' in message:
-            return RequestComplexity.COMPLEX
-        if len(message) < 30 and '?' not in message:
-            return RequestComplexity.SIMPLE
-        return RequestComplexity.NORMAL
-
-
 class Brain:
     """
     AI logic for the bot using DeepSeek API.
@@ -289,10 +247,9 @@ class Brain:
                 timeout=config.deepseek_timeout,
             )
             # Default/legacy blended prompt — used as a fallback for unknown
-            # situations. Kept immutable after init (see update_system_prompt
-            # note below): Brain is a single instance shared across all
-            # concurrently-handled messages, so per-message prompt swapping
-            # must never mutate shared state.
+            # situations. Kept immutable after init: Brain is a single
+            # instance shared across all concurrently-handled messages, so
+            # per-message prompt swapping must never mutate shared state.
             self._system_prompt = get_system_prompt(
                 config.bot_name,
                 self._available_stickers,
@@ -696,79 +653,6 @@ class Brain:
             return FALLBACK_RESPONSES["api_error"]
 
     # ------------------------------------------------------------------ #
-    # Public: legacy methods (kept for backward compatibility)
-    # ------------------------------------------------------------------ #
-    def should_respond(
-        self,
-        message_text: str,
-        bot_responded_recently: bool = False,
-    ) -> bool:
-        """Legacy heuristic check. Prefer analyze_and_respond() for V2."""
-        message_lower = message_text.lower()
-
-        for variation in self._name_variations:
-            if variation in message_lower:
-                return True
-
-        if bot_responded_recently:
-            for trigger in CONTINUATION_TRIGGERS:
-                if trigger in message_lower:
-                    return True
-
-        if "?" in message_text:
-            return True
-
-        return random.random() < self.config.random_response_probability
-
-    async def smart_should_respond(
-        self,
-        message_text: str,
-        context: str,
-        bot_responded_recently: bool = False,
-    ) -> bool:
-        """Legacy AI-based respond check. Prefer analyze_and_respond() for V2."""
-        message_lower = message_text.lower()
-        for variation in self._name_variations:
-            if variation in message_lower:
-                return True
-
-        try:
-            decision_prompt = f"""Ты участник группового чата. Реши — отвечать или нет.
-
-Контекст:
-{context[-400:]}
-
-Новое сообщение: "{message_text}"
-
-Ты отвечал недавно: {"да" if bot_responded_recently else "нет"}
-
-Ответь ТОЛЬКО "да" или "нет".
-
-Отвечай "да" если:
-- Есть вопрос к чату
-- Можешь добавить что-то интересное или смешное
-- Тебя как будто спрашивают или ждут реакции
-
-Отвечай "нет" если:
-- Междометие без смысла
-- Ты только что отвечал
-- Люди болтают между собой и ты не в теме"""
-
-            response = self.client.chat.completions.create(
-                model=self.config.deepseek_model,
-                messages=[{"role": "user", "content": decision_prompt}],
-                max_tokens=3,
-                temperature=0.7,
-            )
-
-            answer = response.choices[0].message.content.strip().lower()
-            return "да" in answer or "yes" in answer
-
-        except Exception as e:
-            logger.warning(f"Smart respond failed, falling back: {e}")
-            return random.random() < self.config.random_response_probability
-
-    # ------------------------------------------------------------------ #
     # Internal helpers
     # ------------------------------------------------------------------ #
     @staticmethod
@@ -781,10 +665,6 @@ class Brain:
             3: TokenRange(400, 1500),     # deep, detailed
         }
         return ranges.get(grade, TokenRange(150, 400))
-
-    def update_system_prompt(self, new_prompt: str) -> None:
-        self._system_prompt = new_prompt
-        logger.info("System prompt updated")
 
     async def summarize_person(self, name: str, raw_facts: str) -> Optional[str]:
         """

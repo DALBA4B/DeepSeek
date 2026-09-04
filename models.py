@@ -20,13 +20,6 @@ class ResponseType(Enum):
     STICKER = "sticker"
 
 
-class RequestComplexity(Enum):
-    """Complexity levels for incoming requests."""
-    SIMPLE = "simple"      # Quick answers: yes/no, reactions, short jokes
-    NORMAL = "normal"      # Regular conversation
-    COMPLEX = "complex"    # Explanations, stories, plans
-
-
 class InterestStatus(Enum):
     """Status of user interests (likes or dislikes)."""
     LIKES = "likes"
@@ -59,17 +52,7 @@ class TokenRange:
     """Token range for dynamic response length."""
     min_tokens: int
     max_tokens: int
-    
-    @classmethod
-    def for_complexity(cls, complexity: RequestComplexity) -> 'TokenRange':
-        """Get token range for a given complexity level."""
-        ranges = {
-            RequestComplexity.SIMPLE: cls(80, 200),
-            RequestComplexity.NORMAL: cls(150, 400),
-            RequestComplexity.COMPLEX: cls(300, 800),
-        }
-        return ranges.get(complexity, cls(100, 300))
-    
+
     def random_value(self) -> int:
         """Get a random token count within the range."""
         import random
