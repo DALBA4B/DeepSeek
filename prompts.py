@@ -527,7 +527,7 @@ STICKER_REQUEST_KEYWORDS: List[str] = [
 # which aren't in this set, so those reactions silently failed and fell back
 # to text. This is the single source of truth: used both to tell the model
 # what it may pick from (see _response_formats_block) and to validate/guard
-# before ever attempting set_reaction (see responder.is_allowed_reaction).
+# before ever attempting set_reaction (see responder._ALLOWED_REACTIONS).
 ALLOWED_REACTION_EMOJIS: List[str] = [
     "👍", "👎", "❤", "🔥", "🥰", "👏", "😁", "🤔", "🤯", "😱",
     "🤬", "😢", "🎉", "🤩", "🙏", "👌", "🕊", "🤡", "🥱", "🥴",
@@ -543,5 +543,4 @@ ALLOWED_REACTION_EMOJIS: List[str] = [
 # Fallback responses for error cases
 FALLBACK_RESPONSES = {
     "api_error": "Бабки закончились так что ответов больше не будет.",
-    "no_context": "Нет предыдущих сообщений в чате.",
 }

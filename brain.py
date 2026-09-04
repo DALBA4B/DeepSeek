@@ -20,7 +20,6 @@ from prompts import (
     get_system_prompt,
     get_system_prompt_for_situation,
     get_context_prompt,
-    get_name_variations,
     FALLBACK_RESPONSES,
     GIF_REQUEST_KEYWORDS,
     STICKER_REQUEST_KEYWORDS,
@@ -228,7 +227,6 @@ class Brain:
             "happy", "sad", "laugh", "cool", "think", "wtf"
         ]
         self._rag_client = rag_client
-        self._name_variations = get_name_variations(config.bot_name)
 
         # ConversationAnalyzer for grade 0-3 + memory decisions
         self._analyzer = ConversationAnalyzer(
