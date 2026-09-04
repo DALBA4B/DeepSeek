@@ -6,11 +6,10 @@ Handles scheduled tasks like nightly DeepSeek analysis.
 
 import asyncio
 import logging
-from datetime import datetime, time, timedelta
+from datetime import datetime, time
 from typing import Callable, Optional, Awaitable
-import pytz
 
-from utils import get_now
+from utils import get_now, get_zone
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +27,7 @@ class TaskScheduler:
         Args:
             timezone: Timezone for scheduling (default: Europe/Kiev)
         """
-        self._timezone = pytz.timezone(timezone)
+        self._timezone = get_zone(timezone)
         self._tasks: dict = {}
         self._running = False
         self._task_handle: Optional[asyncio.Task] = None
@@ -56,27 +55,6 @@ class TaskScheduler:
             "last_run": None
         }
         logger.info(f"Scheduled task '{name}' for {hour:02d}:{minute:02d} daily")
-    
-    def _get_next_run_time(self, target_time: time) -> datetime:
-        """
-        Calculate the next run time for a daily task.
-        
-        Args:
-            target_time: Target time of day
-            
-        Returns:
-            Next datetime to run the task
-        """
-        now = datetime.now(self._timezone)
-        target = self._timezone.localize(
-            datetime.combine(now.date(), target_time)
-        )
-        
-        # If target time has passed today, schedule for tomorrow
-        if target <= now:
-            target += timedelta(days=1)
-        
-        return target
     
     async def _run_scheduler(self) -> None:
         """Main scheduler loop."""

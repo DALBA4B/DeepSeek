@@ -10,9 +10,6 @@ aiohttp>=3.9.0
 # DeepSeek API for analysis (via OpenAI client)
 # openai already included above
 
-# Timezone support for scheduler
-pytz>=2023.3
-
 # IANA timezone data for zoneinfo (required on Windows)
 tzdata>=2024.1
 

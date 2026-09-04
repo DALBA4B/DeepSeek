@@ -8,7 +8,7 @@ the LightRAG HTTP API:
 
     - retrieve(): query facts (used by brain.py before answering)
     - insert():   nightly ingest of chat blocks (used by rag_ingestor.py)
-    - clear():    wipe storage (debug / reset)
+    - query_direct(): full LightRAG answer (used by /mem)
     - health():   connectivity check (used by /ragstats)
 
 Authentication
