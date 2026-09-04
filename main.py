@@ -475,7 +475,7 @@ class DeepSeekBot:
         )
 
     async def _handle_memory_trigger(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle /память <запрос> — query LightRAG directly and return synthesized answer."""
+        """Handle /mem <запрос> — query LightRAG directly and return synthesized answer."""
         if not update.effective_chat or not update.message:
             return
 
@@ -483,7 +483,7 @@ class DeepSeekBot:
         query = " ".join(context.args).strip() if context.args else ""
 
         if not query:
-            await context.bot.send_message(chat_id=chat_id, text="Напиши что искать: !память <вопрос>")
+            await context.bot.send_message(chat_id=chat_id, text="Напиши что искать: /mem <вопрос>")
             return
 
         if self.rag_client is None:
