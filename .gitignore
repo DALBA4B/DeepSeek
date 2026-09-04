@@ -82,6 +82,7 @@ dmypy.json
 
 # Telegram history exports (personal chat data — never commit)
 [0-9][0-9].[0-9][0-9].[0-9][0-9][0-9][0-9]-*.json
+2022год.json
 result.json
 import_progress.json
 import_names.json
@@ -105,3 +106,6 @@ desc_snapshot.json
 _*.py
 _*.json
 _*.txt
+
+# Local analysis dump: old graph audits, probe outputs, misc run artifacts.
+archive/
