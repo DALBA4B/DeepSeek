@@ -21,6 +21,7 @@ from telegram.ext import Application, MessageHandler, CommandHandler, filters, C
 
 from config import get_config, ConfigError
 from models import BotConfig
+from bot_state import BotState
 from memory import Memory, RecentResponseTracker
 from brain import Brain, SILENT_REACT_PREFIX
 from responder import Responder, ResponseParser
@@ -103,6 +104,10 @@ class DeepSeekBot:
 
         # Memory first (needed by RAG ingestor)
         self.memory = memory or Memory(config)
+
+        # On/off switch (/on, /off) — persisted so it survives Railway restarts.
+        firebase_db = self.memory.storage.get_client() if self.memory.storage else None
+        self.state = BotState(firebase_db=firebase_db)
 
         # LightRAG client (may be None if disabled/unconfigured)
         self.rag_client = rag_client or build_rag_client(config)
@@ -217,6 +222,12 @@ class DeepSeekBot:
         if not message:
             return
 
+        # Power switch (/off): the bot is fully dead — no memory writes, no
+        # classifier, no DeepSeek calls, zero token spend. /on arrives via a
+        # separate CommandHandler and is not affected by this guard.
+        if not self.state.is_enabled():
+            return
+
         # Ignore messages from the bot itself and from other bots
         if message.from_user.id == context.bot.id:
             return
@@ -313,10 +324,23 @@ class DeepSeekBot:
             logger.error(f"Error handling message: {e}", exc_info=True)
 
     # ------------------------------------------------------------------ #
+    # Power switch
+    # ------------------------------------------------------------------ #
+    async def _cmd_on(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /on: turn the bot back on. Deliberately silent — no reply."""
+        self.state.set_enabled(True)
+
+    async def _cmd_off(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /off: fully power the bot down. Deliberately silent — no reply."""
+        self.state.set_enabled(False)
+
+    # ------------------------------------------------------------------ #
     # Commands: RAG (Phase B)
     # ------------------------------------------------------------------ #
     async def _cmd_ragstats(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /ragstats: LightRAG connectivity + last ingest summary."""
+        if not self.state.is_enabled():
+            return
         if not update.effective_chat:
             return
         chat_id = update.effective_chat.id
@@ -359,6 +383,8 @@ class DeepSeekBot:
 
     async def _cmd_ragnow(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /ragnow: manually trigger a RAG ingest for the last 24h."""
+        if not self.state.is_enabled():
+            return
         if not update.effective_chat:
             return
         chat_id = update.effective_chat.id
@@ -395,6 +421,8 @@ class DeepSeekBot:
         Handle /profile <имя>: ask LightRAG for facts about a person and show
         a compact summary. Useful for debugging what the bot "remembers".
         """
+        if not self.state.is_enabled():
+            return
         if not update.effective_chat:
             return
         chat_id = update.effective_chat.id
@@ -448,6 +476,8 @@ class DeepSeekBot:
         (reply to their message to target them). Reads GrudgeTracker state —
         purely in-RAM, resets on restart, escalates "Ответочка" tone only.
         """
+        if not self.state.is_enabled():
+            return
         if not update.effective_chat or not update.message:
             return
         chat_id = update.effective_chat.id
@@ -476,6 +506,8 @@ class DeepSeekBot:
 
     async def _handle_memory_trigger(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /mem <запрос> — query LightRAG directly and return synthesized answer."""
+        if not self.state.is_enabled():
+            return
         if not update.effective_chat or not update.message:
             return
 
@@ -575,6 +607,8 @@ class DeepSeekBot:
             )
 
             # Commands
+            self._app.add_handler(CommandHandler("on", self._cmd_on))
+            self._app.add_handler(CommandHandler("off", self._cmd_off))
             self._app.add_handler(CommandHandler("ragstats", self._cmd_ragstats))
             self._app.add_handler(CommandHandler("ragnow", self._cmd_ragnow))
             self._app.add_handler(CommandHandler("profile", self._cmd_profile))
@@ -585,7 +619,9 @@ class DeepSeekBot:
             self._app.post_shutdown = self._shutdown_handler
 
             logger.info("Starting polling...")
-            self._app.run_polling(allowed_updates=Update.ALL_TYPES)
+            # drop_pending_updates: after a restart the bot must not burst-answer
+            # everything that piled up while it was off/down.
+            self._app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
         except KeyboardInterrupt:
             logger.info("Bot stopped by user (KeyboardInterrupt)")

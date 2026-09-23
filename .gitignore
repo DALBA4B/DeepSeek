@@ -109,3 +109,6 @@ _*.txt
 
 # Local analysis dump: old graph audits, probe outputs, misc run artifacts.
 archive/
+
+# Local on/off switch state (bot stays off only until the next restart — state file is ephemeral).
+bot_state.json
