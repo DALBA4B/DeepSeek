@@ -326,6 +326,31 @@ class DeepSeekBot:
     # ------------------------------------------------------------------ #
     # Power switch
     # ------------------------------------------------------------------ #
+    async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """
+        Handle /help: list available commands.
+
+        Deliberately NOT gated by the power switch (like /on): when the bot is
+        off, /help is how someone learns that /on exists at all.
+        """
+        if not update.effective_chat:
+            return
+        rag_note = " (недоступно: LightRAG выключен)" if self.rag_client is None else ""
+        text = (
+            "🤖 Команды бота:\n"
+            "/on /off — включить/выключить бота\n"
+            "/mood — настроение насчёт человека (ответом на его сообщение)\n"
+            "\n"
+            "Долгосрочная память" + rag_note + ":\n"
+            "/mem <вопрос> — поиск в памяти\n"
+            "/profile <имя> — что бот знает про человека\n"
+            "/ragstats — статус и статистика памяти\n"
+            "/ragnow — запустить индексацию чата сейчас\n"
+        )
+        if not self.state.is_enabled():
+            text += "\n💤 Бот сейчас выключен. /on — чтобы включить."
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
+
     async def _cmd_on(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /on: turn the bot back on. Deliberately silent — no reply."""
         self.state.set_enabled(True)
@@ -607,6 +632,7 @@ class DeepSeekBot:
             )
 
             # Commands
+            self._app.add_handler(CommandHandler("help", self._cmd_help))
             self._app.add_handler(CommandHandler("on", self._cmd_on))
             self._app.add_handler(CommandHandler("off", self._cmd_off))
             self._app.add_handler(CommandHandler("ragstats", self._cmd_ragstats))
