@@ -77,6 +77,9 @@ _JUNK: List[str] = [
     # single-character noise from 2025 import
     "X", "Z", "А", "В", "Г", "Н", "С", "Ф", "ф",
     "reply",                        # chat mechanics leaked as entity
+    # 2023 import junk
+    "2023-08-16", "2023-08-17", "2023-10-04",
+    "🤡",
 ]
 
 # Quantities the extractor mistook for entities: "10 км", "700 грн", "128GB",
