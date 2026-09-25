@@ -340,12 +340,7 @@ class DeepSeekBot:
             "🤖 Команды бота:\n"
             "/on /off — включить/выключить бота\n"
             "/mood — настроение насчёт человека (ответом на его сообщение)\n"
-            "\n"
-            "Долгосрочная память" + rag_note + ":\n"
-            "/mem <вопрос> — поиск в памяти\n"
-            "/profile <имя> — что бот знает про человека\n"
-            "/ragstats — статус и статистика памяти\n"
-            "/ragnow — запустить индексацию чата сейчас\n"
+            "/mem <вопрос> — поиск в памяти" + rag_note + "\n"
         )
         if not self.state.is_enabled():
             text += "\n💤 Бот сейчас выключен. /on — чтобы включить."
@@ -439,60 +434,6 @@ class DeepSeekBot:
                 f"📦 Блоков: {stats.get('blocks', 0)}\n"
                 f"⬆️ Добавлено: {stats.get('inserted', 0)}"
             ),
-        )
-
-    async def _cmd_profile(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """
-        Handle /profile <имя>: ask LightRAG for facts about a person and show
-        a compact summary. Useful for debugging what the bot "remembers".
-        """
-        if not self.state.is_enabled():
-            return
-        if not update.effective_chat:
-            return
-        chat_id = update.effective_chat.id
-
-        if self.rag_client is None:
-            await context.bot.send_message(chat_id=chat_id, text="ℹ️ LightRAG не настроен")
-            return
-
-        # Parse target name from command args or from a replied-to message
-        args = context.args
-        target = " ".join(args).strip() if args else ""
-        if not target and update.message and update.message.reply_to_message:
-            ru = update.message.reply_to_message.from_user
-            target = ru.first_name or ru.username or ""
-        if not target:
-            await context.bot.send_message(
-                chat_id=chat_id, text="Использование: /profile <имя> (или ответь на сообщение человека)"
-            )
-            return
-
-        # LightRAG retrieval plus a summarization call — comfortably longer than
-        # Telegram's ~5s action window, so hold the indicator for both.
-        async with keep_typing(context.bot, chat_id):
-            facts = await self.rag_client.retrieve(
-                f"факты, интересы и привычки человека по имени {target}"
-            )
-            if not facts:
-                await context.bot.send_message(
-                    chat_id=chat_id, text=f"🤷 Ничего не знаю про «{target}». Возможно, ещё не проиндексировано."
-                )
-                return
-
-            # The retrieval result is a machine-readable context blob (JSON entity
-            # records, <SEP>-joined descriptions). Send it through the model so the
-            # chat gets prose; fall back to the trimmed blob if that call fails.
-            summary = await self.brain.summarize_person(target, facts)
-
-        if not summary:
-            summary = facts.strip()
-            if len(summary) > 1500:
-                summary = summary[:1497] + "..."
-
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"📊 Что я знаю про {target}:\n\n{summary}",
         )
 
     async def _cmd_mood(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -637,9 +578,8 @@ class DeepSeekBot:
             self._app.add_handler(CommandHandler("off", self._cmd_off))
             self._app.add_handler(CommandHandler("ragstats", self._cmd_ragstats))
             self._app.add_handler(CommandHandler("ragnow", self._cmd_ragnow))
-            self._app.add_handler(CommandHandler("profile", self._cmd_profile))
-            self._app.add_handler(CommandHandler("mood", self._cmd_mood))
             self._app.add_handler(CommandHandler("mem", self._handle_memory_trigger))
+            self._app.add_handler(CommandHandler("mood", self._cmd_mood))
 
             self._app.post_init = self._startup_handler
             self._app.post_shutdown = self._shutdown_handler

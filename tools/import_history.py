@@ -1,4 +1,4 @@
-# import_history.py
+﻿# import_history.py
 """
 One-off importer: load an exported Telegram chat history into LightRAG.
 
@@ -49,7 +49,7 @@ Usage
     # import everything (resumes automatically if interrupted)
     python tools/import_history.py --file result.json
 
-    # one month at a time (recommended: verify /profile between months)
+    # one month at a time (recommended: verify with /mem between months)
     python tools/import_history.py --file result.json --since 2026-03-01 --until 2026-03-31
 
     # re-import days already done (ignore progress file)
