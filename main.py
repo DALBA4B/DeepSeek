@@ -105,9 +105,8 @@ class DeepSeekBot:
         # Memory first (needed by RAG ingestor)
         self.memory = memory or Memory(config)
 
-        # On/off switch (/on, /off) — persisted so it survives Railway restarts.
-        firebase_db = self.memory.storage.get_client() if self.memory.storage else None
-        self.state = BotState(firebase_db=firebase_db)
+        # On/off switch (/on, /off) — persisted to a local file.
+        self.state = BotState()
 
         # LightRAG client (may be None if disabled/unconfigured)
         self.rag_client = rag_client or build_rag_client(config)
@@ -191,11 +190,9 @@ class DeepSeekBot:
             logger.info("RAG nightly ingest skipped: no RagClient configured")
             return
 
-        firebase_db = self.memory.storage.get_client() if self.memory.storage else None
         self.rag_ingestor = RagIngestor(
             rag_client=self.rag_client,
             memory=self.memory,
-            firebase_db=firebase_db,
             config=self.config,
         )
         self.rag_task = RagIngestTask(
@@ -257,7 +254,7 @@ class DeepSeekBot:
             if message.reply_to_message and message.reply_to_message.text:
                 reply_text = message.reply_to_message.text
 
-            # Save to memory (short-term + daily_log + Firebase), with reply context
+            # Save to memory (short-term + daily_log), with reply context
             self.memory.add_message(
                 user_id, username, text, message_id,
                 reply_to_text=reply_text or None,

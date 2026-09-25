@@ -55,14 +55,14 @@ class ChatMessage:
     chat_id: Optional[int] = None
 
     def to_dict(self) -> dict:
-        """Convert to dictionary for Firebase storage."""
+        """Convert to a storage dictionary."""
         data = {
             "user_id": self.user_id,
             "username": self.username,
             "text": self.text,
             "message_id": self.message_id,
             "timestamp": self.timestamp,
-            "date": self.timestamp.date().isoformat()  # date field for Firebase queries
+            "date": self.timestamp.date().isoformat()  # date field for day-level queries
         }
         if self.reply_to_text:
             data["reply_to_text"] = self.reply_to_text
@@ -73,11 +73,11 @@ class ChatMessage:
     @classmethod
     def from_dict(cls, data: dict) -> "ChatMessage":
         """
-        Build a ChatMessage from a stored dict (e.g. a Firestore document).
+        Build a ChatMessage from a stored dict.
 
         Tolerant by design: ignores extra fields (like the `date` query helper
         stored alongside the message) and normalizes the timestamp whether it
-        was stored as an ISO string or as a native Firestore datetime. This is
+        was stored as an ISO string or as a native datetime. This is
         the inverse of `to_dict` and avoids the KeyError/TypeError that
         `ChatMessage(**data)` hit on the extra `date` key.
 
@@ -147,7 +147,6 @@ class BotConfig:
     telegram_token: str
     deepseek_api_key: str
     giphy_api_key: str
-    firebase_cred_path: str
 
     # Bot settings
     bot_name: str = "Вася"
@@ -229,25 +228,3 @@ class BotConfig:
     # informational: the outcome is never allowed to stop the bot, because a
     # red test on Railway would otherwise turn into a restart loop.
     selftest_on_startup: bool = False
-
-
-@dataclass
-class UserInfo:
-    """
-    User information stored in Firebase.
-    
-    Attributes:
-        user_id: Telegram user ID
-        username: Display name
-        last_seen: Last activity timestamp
-    """
-    user_id: int
-    username: str
-    last_seen: datetime = field(default_factory=lambda: get_now("UTC"))
-
-    def to_dict(self) -> dict:
-        """Convert to dictionary for Firebase storage."""
-        return {
-            "username": self.username,
-            "last_seen": self.last_seen
-        }

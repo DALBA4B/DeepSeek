@@ -9,7 +9,7 @@
 - ✅ **Долгосрочная память через LightRAG** — векторная база знаний о людях в чате, семантический поиск фактов, а не keyword-matching
 - ✅ **«Ответочка»** — детектор наездов на бота + память обид (`GrudgeTracker`), тон эскалируется при повторных атаках
 - ✅ **Multiple response formats** — текст, реакции emoji, гифки, стикеры; частота контролируется КОДОМ (гифка ~1.5%, стикер/реакция ~5% на неожиданный медиа-ответ), а не оставлена на усмотрение модели, плюс явные просьбы ("скинь гифку") форсируются напрямую; несколько стикерпаков сразу, без повтора недавних стикеров
-- ✅ **Smart memory system** — краткосрочная (RAM) и долгосрочная (Firebase + LightRAG) память
+- ✅ **Smart memory system** — краткосрочная (RAM) и долгосрочная (LightRAG) память
 - ✅ **Retry/backoff** — все вызовы DeepSeek переживают транзиентные сбои (таймаут/5xx/429) без деградации качества
 - ✅ **Secure credentials** — все секреты хранятся в `.env` файле
 - ✅ **Modular architecture** — чистый, типизированный код с dependency injection
@@ -23,7 +23,6 @@
 - Telegram Bot Account (получи token у [@BotFather](https://t.me/botfather))
 - DeepSeek API Key (от https://api.deepseek.com)
 - Giphy API Key (от https://developers.giphy.com)
-- Firebase Firestore (с credentials JSON файлом)
 
 ## Быстрый старт
 
@@ -76,7 +75,7 @@ python main.py
 ├── prompts.py              # Системные промпты для DeepSeek
 ├── utils.py                # Общие хелперы (timezone-aware время)
 ├── main.py                 # Точка входа, класс DeepSeekBot, команды
-├── memory.py               # Двухуровневая память (RAM + Firebase)
+├── memory.py               # Память: short-term в RAM + daily log
 ├── brain.py                # V2: ситуативные промпты, GrudgeTracker, RagUsageStats, генерация
 ├── conversation_analyzer.py # Fast-классификатор: grade 0-3 + situation + needs_memory + rag_query
 ├── rag_client.py           # Async-клиент LightRAG (retrieve/insert/clear/health)
@@ -223,7 +222,7 @@ API-вызов впустую, а сразу уходит в текстовый 
     ↓
 RagIngestTask.run()
     └── RagIngestor.ingest()
-          ├── Сбор сообщений (Firebase → fallback daily_log)
+          ├── Сбор сообщений (daily_log за день)
           ├── Группировка по времени (блоки 10-15 мин, reply_to вшит в блок)
           └── все блоки за период объединяются в ОДИН документ → rag_client.insert() → LightRAG сам делает extraction + embeddings + чанкинг
     ↓
@@ -269,7 +268,6 @@ RagIngestTask.run()
 ### Защита учетных данных
 
 - ✅ Все токены и ключи в `.env`
-- ✅ Firebase credentials в отдельном JSON файле
 - ✅ `.gitignore` защищает конфиденциальные файлы
 - ✅ `config.py` валидирует наличие всех переменных
 
@@ -383,11 +381,6 @@ grade 2 → обычный ответ, grade 3 → развёрнутый) вм�
 - Проверь баланс DeepSeek аккаунта
 - Проверь правильность API key
 - Проверь интернет соединение
-
-### "Firebase initialization failed"
-- Проверь путь к credentials JSON
-- Проверь что файл существует и валиден
-- Бот продолжит работу без долгосрочной памяти
 
 ## Лицензия
 

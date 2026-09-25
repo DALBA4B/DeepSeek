@@ -13,6 +13,5 @@ def bot_config() -> BotConfig:
         telegram_token="test-telegram-token",
         deepseek_api_key="test-deepseek-key",
         giphy_api_key="test-giphy-key",
-        firebase_cred_path="test-firebase-cred.json",
         bot_name="Дип Сик",
     )

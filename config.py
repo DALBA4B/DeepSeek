@@ -84,46 +84,6 @@ def _get_optional_float(key: str, default: float) -> float:
         return default
 
 
-def _get_firebase_credentials() -> Optional[str]:
-    """
-    Get Firebase credentials from environment.
-    Tries FIREBASE_CRED_JSON first (for Railway), then FIREBASE_CRED_PATH (for local dev).
-    Returns None if neither is available.
-    
-    Returns:
-        Firebase credentials path or None
-    """
-    # Priority 1: FIREBASE_CRED_JSON (full JSON string - for Railway)
-    firebase_json = os.getenv("FIREBASE_CRED_JSON")
-    if firebase_json:
-        stripped = firebase_json.strip()
-        # A value pasted into a hosting dashboard can arrive with its outer
-        # braces clipped off. Without this repair the string doesn't start with
-        # "{", so it's treated as a *file path* and Firebase dies with a
-        # baffling "File name too long" instead of naming the real problem.
-        if not stripped.startswith("{") and '"type"' in f'"{stripped[:20]}':
-            logger.warning(
-                "FIREBASE_CRED_JSON looks like JSON with its outer braces "
-                "missing — restoring them. Re-paste the value including { }."
-            )
-            stripped = "{" + stripped.rstrip("}") + "}"
-        logger.info("Using FIREBASE_CRED_JSON from environment")
-        return stripped
-    
-    # Priority 2: FIREBASE_CRED_PATH (file path - for local development)
-    firebase_path = os.getenv("FIREBASE_CRED_PATH")
-    if firebase_path:
-        if os.path.exists(firebase_path):
-            logger.info(f"Using FIREBASE_CRED_PATH: {firebase_path}")
-            return firebase_path
-        else:
-            logger.warning(f"FIREBASE_CRED_PATH specified but file not found: {firebase_path}")
-    
-    # No Firebase credentials found
-    logger.warning("No Firebase credentials found (FIREBASE_CRED_JSON or FIREBASE_CRED_PATH)")
-    return None
-
-
 def load_config() -> BotConfig:
     """
     Load and validate all configuration from environment.
@@ -139,7 +99,6 @@ def load_config() -> BotConfig:
         telegram_token=_get_required_env("TELEGRAM_TOKEN"),
         deepseek_api_key=_get_required_env("DEEPSEEK_API_KEY"),
         giphy_api_key=_get_required_env("GIPHY_API_KEY"),
-        firebase_cred_path=_get_firebase_credentials(),
 
         # Bot settings
         bot_name=os.getenv("BOT_NAME", "Вася"),

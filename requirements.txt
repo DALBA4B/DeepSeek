@@ -1,8 +1,7 @@
-# Core dependencies
+﻿# Core dependencies
 python-dotenv>=1.0.0
 python-telegram-bot>=21.0
 openai>=1.0.0
-firebase-admin>=6.0.0
 
 # HTTP client (async)
 aiohttp>=3.9.0

@@ -20,11 +20,15 @@ Idempotency
 -----------
 Restarts/redeploys are common on Railway/Render. To avoid re-inserting the
 same day twice (and to avoid skipping a day if the bot was down at ingest
-time), the last successful ingest timestamp is persisted in Firebase under
-collection `rag_meta` / doc `ingest_state`. Each run resumes from there.
+time), the last successful ingest timestamp is persisted to a local JSON file
+(`rag_ingest_cursor.json`). Note: Railway wipes the filesystem on redeploy,
+so after a redeploy the ingest re-runs from the default window — LightRAG's
+own dedup keeps that harmless.
 """
 
+import json
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import List, Optional
 
@@ -34,9 +38,8 @@ from utils import get_now, to_aware
 
 logger = logging.getLogger(__name__)
 
-# Firebase document that stores where the last ingest got to.
-_RAG_META_COLLECTION = "rag_meta"
-_RAG_META_DOC = "ingest_state"
+# Local file storing where the last ingest got to (idempotency cursor).
+_CURSOR_FILE = "rag_ingest_cursor.json"
 _LAST_INGEST_FIELD = "last_ingest_timestamp"
 _LAST_STATS_FIELD = "last_ingest_stats"
 
@@ -46,23 +49,19 @@ class RagIngestor:
     Collect → group → insert chat history into LightRAG.
 
     Attributes:
-        rag_client:     Live RagClient (insert() is called per block).
-        memory:         Memory instance (used for the RAM fallback source).
-        firebase_db:    Optional Firestore client for the durable source and
-                        for persisting the ingest cursor.
-        config:         BotConfig (grouping params + timezone).
+        rag_client: Live RagClient (insert() is called per block).
+        memory:     Memory instance (source of the day's messages).
+        config:     BotConfig (grouping params + timezone).
     """
 
     def __init__(
         self,
         rag_client: RagClient,
         memory,
-        firebase_db=None,
         config: Optional[BotConfig] = None,
     ) -> None:
         self.rag_client = rag_client
         self.memory = memory
-        self.firebase_db = firebase_db
         self.config = config
         self._tz = config.timezone if config is not None else "UTC"
 
@@ -71,31 +70,22 @@ class RagIngestor:
     # ------------------------------------------------------------------ #
     def get_last_ingest_timestamp(self) -> Optional[datetime]:
         """
-        Read the persisted "last successful ingest" timestamp from Firebase.
+        Read the persisted "last successful ingest" timestamp.
 
         Returns:
             Timezone-aware datetime of the last ingest end, or None if no
-            previous ingest is recorded (first run / Firebase unavailable).
+            previous ingest is recorded (first run / file lost on redeploy).
         """
-        if self.firebase_db is None:
-            return None
         try:
-            doc = (
-                self.firebase_db.collection(_RAG_META_COLLECTION)
-                .document(_RAG_META_DOC)
-                .get()
-            )
-            if not doc.exists:
+            if not os.path.exists(_CURSOR_FILE):
                 return None
-            data = doc.to_dict() or {}
-            ts = data.get(_LAST_INGEST_FIELD)
+            with open(_CURSOR_FILE, "r", encoding="utf-8") as f:
+                ts = json.load(f).get(_LAST_INGEST_FIELD)
             if isinstance(ts, str):
                 try:
                     return to_aware(datetime.fromisoformat(ts), self._tz)
                 except ValueError:
                     return None
-            if isinstance(ts, datetime):
-                return to_aware(ts, self._tz)
             return None
         except Exception as e:
             logger.warning(f"Could not read last ingest timestamp: {e}")
@@ -103,34 +93,22 @@ class RagIngestor:
 
     def _save_last_ingest_timestamp(self, ts: datetime, stats: dict) -> None:
         """Persist the ingest cursor + a small stats snapshot for /ragstats."""
-        if self.firebase_db is None:
-            return
         try:
-            self.firebase_db.collection(_RAG_META_COLLECTION).document(
-                _RAG_META_DOC
-            ).set(
-                {
-                    _LAST_INGEST_FIELD: ts.isoformat(),
-                    _LAST_STATS_FIELD: stats,
-                },
-                merge=True,
-            )
+            with open(_CURSOR_FILE, "w", encoding="utf-8") as f:
+                json.dump(
+                    {_LAST_INGEST_FIELD: ts.isoformat(), _LAST_STATS_FIELD: stats},
+                    f,
+                )
         except Exception as e:
             logger.warning(f"Could not save last ingest timestamp: {e}")
 
     def get_last_stats(self) -> Optional[dict]:
         """Return the stats dict from the most recent successful ingest."""
-        if self.firebase_db is None:
-            return None
         try:
-            doc = (
-                self.firebase_db.collection(_RAG_META_COLLECTION)
-                .document(_RAG_META_DOC)
-                .get()
-            )
-            if not doc.exists:
+            if not os.path.exists(_CURSOR_FILE):
                 return None
-            return (doc.to_dict() or {}).get(_LAST_STATS_FIELD)
+            with open(_CURSOR_FILE, "r", encoding="utf-8") as f:
+                return json.load(f).get(_LAST_STATS_FIELD)
         except Exception as e:
             logger.warning(f"Could not read last ingest stats: {e}")
             return None

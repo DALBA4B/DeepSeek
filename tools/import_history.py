@@ -475,8 +475,8 @@ async def run_import(args, config: BotConfig) -> int:
     completed = set() if args.force else load_progress(progress_path)
 
     # A RagIngestor purely to reuse group_into_blocks/_render_block. It never
-    # touches memory/firebase here, so those are None.
-    grouper = RagIngestor(rag_client=None, memory=None, firebase_db=None, config=config)
+    # touches memory here, so those are None.
+    grouper = RagIngestor(rag_client=None, memory=None, config=config)
 
     logger.info(
         "Importing %d day(s) from %s to %s (%d already done, will skip)",
