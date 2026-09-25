@@ -358,9 +358,11 @@ class DeepSeekBot:
     # Commands: RAG (Phase B)
     # ------------------------------------------------------------------ #
     async def _cmd_ragstats(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle /ragstats: LightRAG connectivity + last ingest summary."""
-        if not self.state.is_enabled():
-            return
+        """Handle /ragstats: LightRAG connectivity + last ingest summary.
+
+        Not gated by the power switch: it's a diagnostic, and a powered-off bot
+        is exactly when you want to check these.
+        """
         if not update.effective_chat:
             return
         chat_id = update.effective_chat.id
@@ -471,9 +473,11 @@ class DeepSeekBot:
         )
 
     async def _handle_memory_trigger(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle /mem <запрос> — query LightRAG directly and return synthesized answer."""
-        if not self.state.is_enabled():
-            return
+        """Handle /mem <запрос> — query LightRAG directly and return synthesized answer.
+
+        Not gated by the power switch (like /help and /on): /mem is a manual
+        lookup the human asks for, not the bot "participating" in the chat.
+        """
         if not update.effective_chat or not update.message:
             return
 
