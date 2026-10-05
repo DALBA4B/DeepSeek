@@ -88,6 +88,9 @@ import_progress.json
 import_names.json
 graph_audit_report.md
 
+# Retrieval dumps for offline rerank experiments (raw chat facts â€” never commit)
+dumps/
+
 # Temp dump of a credential value for pasting into hosting UI
 _railway_value.txt
 
@@ -110,5 +113,5 @@ _*.txt
 # Local analysis dump: old graph audits, probe outputs, misc run artifacts.
 archive/
 
-# Local on/off switch state (bot stays off only until the next restart — state file is ephemeral).
+# Local on/off switch state (bot stays off only until the next restart ï¿½ state file is ephemeral).
 bot_state.json
