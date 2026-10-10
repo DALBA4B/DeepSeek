@@ -47,10 +47,14 @@ def split_facts(raw: str) -> tuple:
     return _json_lines(ent_block), _json_lines(chunk_block)
 
 
+def ent_name(item: dict) -> str:
+    # LightRAG names the key "entity" (not entity_name / name)
+    return item.get("entity") or item.get("entity_name") or item.get("name") or "?"
+
+
 def fact_text(kind: str, item: dict) -> str:
     if kind == "entity":
-        name = item.get("entity_name") or item.get("name") or "?"
-        return f"ENTITY {name}: {item.get('description', '')}"
+        return f"ENTITY {ent_name(item)}: {item.get('description', '')}"
     return f"CHUNK: {item.get('content', item.get('text', ''))}"
 
 
@@ -66,7 +70,7 @@ def select_overlap(raw: str, question: str, budget: int, desc_cap: int) -> tuple
     scored = []
     for i, ent in enumerate(entities):
         desc = _shrink_description(ent.get("description", ""), desc_cap) if desc_cap else ent.get("description", "")
-        t = f"ENTITY {ent.get('entity_name') or ent.get('name') or '?'}: {desc}"
+        t = f"ENTITY {ent_name(ent)}: {desc}"
         scored.append((overlap_score(t, qwords), 0, i, t))  # entities first on ties
     for i, ch in enumerate(chunks):
         t = f"CHUNK: {ch.get('content', ch.get('text', ''))}"
@@ -84,6 +88,11 @@ def select_overlap(raw: str, question: str, budget: int, desc_cap: int) -> tuple
     return "\n".join(out), kept
 
 
+def short(text: str, n: int = 150) -> str:
+    t = " ".join(text.split())
+    return t[:n] + ("..." if len(t) > n else "")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Offline rerank experiment on dumps.")
     ap.add_argument("--dumps", default="dumps")
@@ -95,46 +104,60 @@ def main() -> int:
         print(f"No dumps in {dump_dir} — run tools/dump_retrieval.py first.")
         return 1
     lines = ["# Rerank experiment: baseline vs word-overlap", ""]
+    lines += ["Как читать: у каждого вопроса два списка фактов — что берет бот",
+              "сегодня (baseline) и что взял бы отбор (overlap). Бюджет одинаковый.",
+              "Смотришь только имена/первые строки и блок ЗАМЕНА.",
+              "Вердикт — одна строка на вопрос.", ""]
     for path in files:
         rec = json.loads(path.read_text(encoding="utf-8"))
         q = rec["question"]
         baseline = rec.get("compacted") or ""
         budget = len(baseline)
-        overlap_text, kept = select_overlap(
+        entities, chunks = split_facts(rec.get("raw_context", ""))
+        _, kept = select_overlap(
             rec.get("raw_context", ""), q, budget, rec.get("desc_cap") or 0
         )
-        entities, chunks = split_facts(rec.get("raw_context", ""))
-        n_diff = sum(1 for k in kept if k["kind"] == "chunk")
+        kept_set = {(k["kind"], k["idx"]) for k in kept}
+        max_chunks = rec.get("max_chunks") or len(chunks)
+        base_set = {("entity", i) for i in range(len(entities))}
+        base_set |= {("chunk", i) for i in range(min(max_chunks, len(chunks)))}
+        ent_names = [ent_name(e) for e in entities]
+        chunk_heads = [short(c.get("content", c.get("text", ""))) for c in chunks]
+
+        def fmt(kind, i):
+            if kind == "entity":
+                name = ent_names[i] if i < len(ent_names) else "?"
+                return f"E{i:02d} {short(name, 60)}"
+            head = chunk_heads[i] if i < len(chunk_heads) else ""
+            return f"C{i:02d} {head}"
+
         lines += [
             f"## {path.name}: {q}",
-            f"raw={rec.get('raw_chars')} chars, budget={budget} chars, "
-            f"entities={len(entities)}, chunks_total={len(chunks)}, "
-            f"overlap_kept_chunks={n_diff}, elapsed={rec.get('elapsed_ms')}ms",
+            f"сырого: {rec.get('raw_chars')}, бюджет: {budget}, "
+            f"сущностей: {len(entities)}, чанков всего: {len(chunks)}",
             "",
-            "<details><summary>baseline (what the bot sends today)</summary>",
-            "",
-            "```",
-            baseline[:6000],
-            "```",
-            "</details>",
-            "",
-            "<details><summary>overlap variant (same budget)</summary>",
-            "",
-            "```",
-            overlap_text[:6000],
-            "```",
-            "</details>",
-            "",
-            f"kept: {json.dumps(kept, ensure_ascii=False)}",
-            "",
-            "VERDICT (fill by hand): baseline / overlap / tie — why:",
-            "",
-            "---",
+            f"### Baseline (бот сегодня): {len(base_set)} фактов",
             "",
         ]
+        for kind, i in sorted(base_set):
+            lines.append(f"- {fmt(kind, i)}")
+        lines += ["", f"### Overlap (отбор): {len(kept_set)} фактов", ""]
+        for k in kept:
+            lines.append(f"- [score {k['score']}] {fmt(k['kind'], k['idx'])}")
+        only_base = sorted(base_set - kept_set)
+        only_over = sorted(kept_set - base_set)
+        lines += ["", "### Замена (что поменялось)", ""]
+        if not only_base and not only_over:
+            lines.append("наборы совпали — отбор ничего не меняет")
+        else:
+            for kind, i in only_base:
+                lines.append(f"- ВЫКИНУЛ БЫ: {fmt(kind, i)}")
+            for kind, i in only_over:
+                lines.append(f"- ВЗЯЛ БЫ: {fmt(kind, i)}")
+        lines += ["", f"VERDICT {path.name} (допиши: baseline / overlap / tie / оба мусор):",
+                  "", "---", ""]
     Path(args.out).write_text("\n".join(lines), encoding="utf-8")
     print(f"{len(files)} questions compared -> {args.out}")
-    print("Read both variants per question and mark the verdict by hand.")
     return 0
 
 
