@@ -644,6 +644,12 @@ class Brain:
                 answer = retry_answer
 
             logger.info(f"Generated response (grade={grade}, situation={situation}): {answer[:60]}")
+            # Memory badge: the chat sees when this answer used LightRAG facts
+            # vs when the model improvised. Media directives (STICKER:/GIF:/
+            # REACT:) go to the responder's parser untouched — badge is for
+            # text answers only.
+            if rag_facts and not _is_media_response(answer):
+                answer = f"{answer}\n\n🧠✅"
             return answer
 
         except Exception as e:
