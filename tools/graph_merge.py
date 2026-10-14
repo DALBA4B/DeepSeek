@@ -113,9 +113,31 @@ def _descriptions_conflict(name: str, descriptions: List[str]) -> bool:
 
 
 def _normalize(name: str) -> str:
-    """Fold case, spacing and punctuation so spelling variants collide."""
+    """
+    Fold case, spacing and punctuation so spelling variants collide.
+
+    KEPT IN SYNC with tools/graph_audit.py::_normalize — the audit finds the
+    groups, this script merges them; two different normalizations mean the
+    audit reports groups this script cannot see (real case: Tima vs Тima).
+    """
     s = unicodedata.normalize("NFKC", name).casefold()
+    s = s.replace("ё", "е")
+    for uk, ru in (("і", "и"), ("ї", "и"), ("є", "е"), ("ґ", "г")):
+        s = s.replace(uk, ru)
     return re.sub(r"[\s\-_'\"`.,()]+", "", s)
+
+
+# Latin<->Cyrillic lookalikes, same table as the audit: the extractor mixes
+# scripts inside one name ("Mаксим Тян", "Тima"), plain normalization cannot
+# catch those.
+_TRANSLIT = str.maketrans({
+    "a": "а", "c": "с", "e": "е", "o": "о", "p": "р", "x": "х", "y": "у",
+    "b": "в", "h": "н", "k": "к", "m": "м", "t": "т",
+})
+
+
+def _translit_key(name: str) -> str:
+    return _normalize(name).translate(_TRANSLIT)
 
 
 def _protected_group(members: List[str]) -> bool:
@@ -171,10 +193,23 @@ async def inspect_node(rag: RagClient, label: str) -> Tuple[int, str]:
 
 
 def group_duplicates(labels: List[str]) -> List[List[str]]:
+    """Group labels that normalize to the same key (or transliterate to it).
+
+    Mirrors GraphAuditor.find_duplicates: plain pass plus a second pass over
+    still-unique names catching mixed-script spellings (Latin Т in "Тima").
+    """
     groups: Dict[str, List[str]] = defaultdict(list)
     for label in labels:
         groups[_normalize(label)].append(label)
-    return [sorted(v) for v in groups.values() if len(v) > 1]
+
+    translit_groups: Dict[str, List[str]] = defaultdict(list)
+    for key, names in groups.items():
+        if len(names) == 1:
+            translit_groups[_translit_key(names[0])].append(names[0])
+
+    found = [sorted(v) for v in groups.values() if len(v) > 1]
+    found += [sorted(v) for v in translit_groups.values() if len(v) > 1]
+    return sorted(found, key=lambda g: -len(g))
 
 
 async def plan_merges(

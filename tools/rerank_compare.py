@@ -91,6 +91,9 @@ def main() -> int:
         max_chunks = rec.get("max_chunks") or len(chunks)
 
         # idf over content words
+        # idf with +1 floor: a word present everywhere still distinguishes
+        # "match" (score>0) from "no match" (score==0). Without the floor,
+        # ubiquitous words score exactly 0 and look like misses.
         fws = [fact_words(t) for _, _, t in facts]
         N = len(facts)
         idf = {}
@@ -99,7 +102,7 @@ def main() -> int:
             c = sum(1 for fw in fws
                     if w in fw or any(len(f) >= 4 and common_prefix(f, s) >= 4 for f in fw)
                     or tr in fw)
-            idf[w] = math.log((N + 1) / (c + 1))
+            idf[w] = 1.0 + math.log((N + 1) / (c + 1))
 
         def metrics(kept):
             jk = sum(1 for k, i, t in kept
@@ -131,8 +134,9 @@ def main() -> int:
             if k == "entity" and is_junk_entity(ent_name(ents[i])):
                 sc *= 0.25
             scored.append((sc, k, i, t))
-        absent = not any(v3_score(t, cw, idf)[0] > 0 and
-                         any(w in fact_words(t) for w in cw) for _, _, t in facts)
+        # Absence gate on RAW matches only: stemming/translit find lookalikes
+        # (Тиму for Тимур) which must not count as "knowledge exists".
+        absent = not any(w in fw for w in cw for fw in fws)
         scored.sort(key=lambda s: (-s[0], facts.index((s[1], s[2], s[3]))))
         v3, used = [], 0
         for sc, k, i, t in scored:

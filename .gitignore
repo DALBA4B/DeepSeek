@@ -90,6 +90,8 @@ graph_audit_report.md
 
 # Retrieval dumps for offline rerank experiments (raw chat facts — never commit)
 dumps/
+dumps2/
+dumps3/
 
 # Temp dump of a credential value for pasting into hosting UI
 _railway_value.txt

@@ -81,8 +81,16 @@ def _normalize(name: str) -> str:
     non-breaking hyphen showed up in the real graph), then we strip case,
     punctuation and spacing so "Кирилл-Красавчик" and "кирилл красавчик"
     land on the same key.
+
+    Cyrillic folds: ё->е and Ukrainian і/ї/є/ґ -> и/и/е/г. The chat mixes
+    scripts ("Зазі" vs "Зази", "Тіма" vs "Тима"), and without folding those
+    never land in one duplicate group for review. Grouping is only a
+    suggestion for a human — merging still needs explicit approval.
     """
     s = unicodedata.normalize("NFKC", name).casefold()
+    s = s.replace("ё", "е")
+    for uk, ru in (("і", "и"), ("ї", "и"), ("є", "е"), ("ґ", "г")):
+        s = s.replace(uk, ru)
     s = re.sub(r"[\s\-_'\"`.,()]+", "", s)
     return s
 
@@ -269,7 +277,9 @@ def build_report(
     orphans: List[str],
     contradictions: List[dict],
     truncated: bool,
+    dup_info: Optional[Dict[str, Tuple[int, str]]] = None,
 ) -> str:
+    """dup_info maps entity -> (relation degree, short description)."""
     lines: List[str] = []
     add = lines.append
 
@@ -298,7 +308,18 @@ def build_report(
             "по разным узлам, поэтому поиск находит только половину.")
         add("")
         for group in duplicates:
-            add(f"- {' | '.join(group)}")
+            if dup_info:
+                members = []
+                for name in group:
+                    degree, desc = dup_info.get(name, (0, ""))
+                    members.append(f"{name} (×{degree})")
+                add(f"- {' | '.join(members)}")
+                for name in group:
+                    degree, desc = dup_info.get(name, (0, ""))
+                    if desc:
+                        add(f"  - {name}: {desc}")
+            else:
+                add(f"- {' | '.join(group)}")
     else:
         add("Не найдено.")
     add("")
@@ -401,6 +422,14 @@ async def run_audit(args, config: BotConfig) -> int:
         orphans=orphans,
         contradictions=contradictions,
         truncated=truncated,
+        dup_info={
+            label: (
+                auditor._degree.get(label, 0),
+                " ".join(auditor.description_of(label).split())[:140],
+            )
+            for group in duplicates
+            for label in group
+        },
     )
     with open(args.out, "w", encoding="utf-8") as f:
         f.write(report)
@@ -413,8 +442,9 @@ def main() -> int:
         description="Read-only audit of the LightRAG knowledge graph."
     )
     parser.add_argument("--out", default=_REPORT_DEFAULT, help="Report file path")
-    parser.add_argument("--max-nodes", type=int, default=5000,
-                        help="Cap on nodes pulled from the graph")
+    parser.add_argument("--max-nodes", type=int, default=20000,
+                        help="Cap on nodes pulled from the graph (server caps "
+                             "at ~15000; lower values leave orphans unchecked)")
     parser.add_argument("--people", type=int, default=6,
                         help="How many top people to LLM-check for contradictions")
     parser.add_argument("--skip-llm", action="store_true",
