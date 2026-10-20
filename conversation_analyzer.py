@@ -28,6 +28,7 @@ import aiohttp
 
 from prompts import get_name_variations, INSULT_KEYWORDS
 from retry import DeepSeekHTTPError, retry_async
+import llm_health
 
 logger = logging.getLogger(__name__)
 _rag_debug = logging.getLogger("ragdebug")
@@ -214,6 +215,8 @@ class ConversationAnalyzer:
                     result.grade = max(result.grade, 2)
                 return result
         except Exception as e:
+            if llm_health.is_insufficient_balance(e):
+                llm_health.mark_balance_exhausted()
             logger.warning(f"Classifier LLM call failed: {e}")
 
         # Fallback: lightweight heuristics

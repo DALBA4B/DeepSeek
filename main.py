@@ -71,6 +71,7 @@ def build_rag_client(config: BotConfig) -> Optional[RagClient]:
         insert_timeout=config.lightrag_insert_timeout,
         context_desc_cap=config.lightrag_context_desc_cap,
         context_max_chunks=config.lightrag_context_max_chunks,
+        rerank_enabled=config.rerank_enabled,
     )
 
 

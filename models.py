@@ -213,6 +213,9 @@ class BotConfig:
     lightrag_context_max_chunks: int = 12    # chat excerpts kept
     lightrag_query_timeout: float = 35.0
     lightrag_insert_timeout: float = 15.0
+    # Client-side rerank (rerank.py): same char budget as the plain trim, but
+    # filled by question relevance; junk demoted, zero-score facts kept last.
+    rerank_enabled: bool = True
 
     # Nightly ingest: how often and how the chat is grouped before insert
     rag_ingest_enabled: bool = True

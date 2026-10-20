@@ -14,6 +14,7 @@ import json
 
 
 from rag_client import compact_context, _shrink_description
+from rerank import ABSENT_NOTE
 
 
 def _blob(entities, relations, chunks):
@@ -136,6 +137,69 @@ class TestShrinkDescription:
     def test_cap_is_respected(self):
         desc = "<SEP>".join(f"факт номер {i} " * 30 for i in range(10))
         assert len(_shrink_description(desc, 800)) <= 800 + len("<SEP>") * 10
+
+
+class TestRerankIntegration:
+    """rerank_enabled=True: same budget, filled by relevance instead of order."""
+
+    REL_CHUNKS = [
+        {"reference_id": str(i), "content": f"[2026-01-{i:02d}] болтовня номер {i}, ничего важного"}
+        for i in range(1, 13)
+    ] + [
+        {"reference_id": "13",
+         "content": "[2026-01-13] Максим рассказывал про кальян и угли, долго и подробно"},
+    ]
+
+    def test_flag_off_is_byte_identical_to_the_plain_trim(self):
+        blob = _blob(ENTS, RELS, CHUNKS)
+        plain, _ = compact_context(blob, 1200, 12)
+        off, stats = compact_context(blob, 1200, 12, query="Максим", rerank_enabled=False)
+        assert off == plain
+        assert "rerank" not in stats
+
+    def test_relevant_chunk_outside_the_prefix_gets_picked(self):
+        blob = _blob(ENTS, RELS, self.REL_CHUNKS)
+        out, stats = compact_context(
+            blob, 1200, 12, query="что Максим говорил про кальян", rerank_enabled=True
+        )
+        assert "кальян" in out
+        assert stats["rerank"]["kept"] > 0
+
+    def test_absent_query_gets_the_note(self):
+        out, stats = compact_context(
+            _blob(ENTS, RELS, CHUNKS), 1200, 12,
+            query="вертолет летит", rerank_enabled=True,
+        )
+        assert stats["rerank"]["absent"]
+        assert ABSENT_NOTE in out
+
+    def test_output_stays_parseable_with_rerank(self):
+        out, _ = compact_context(
+            _blob(ENTS, RELS, CHUNKS), 1200, 12,
+            query="Максим говорил про кальян", rerank_enabled=True,
+        )
+        names = {e["entity"] for e in _parse_entities(out)}
+        assert names == {"Максим Тян", "Tima"}
+        assert "спорят" in out
+
+    def test_failure_falls_back_to_the_plain_trim(self, monkeypatch):
+        import rag_client
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(rag_client, "select_facts", boom)
+        blob = _blob(ENTS, RELS, CHUNKS)
+        plain, _ = compact_context(blob, 1200, 12)
+        out, stats = compact_context(blob, 1200, 12, query="Максим", rerank_enabled=True)
+        assert out == plain
+        assert "rerank" not in stats
+
+    def test_rerank_leaves_unknown_layout_untouched(self):
+        weird = "Some completely different context format\nwith no json fences"
+        out, stats = compact_context(weird, 1200, 12, query="Максим", rerank_enabled=True)
+        assert out == weird
+        assert stats == {"recognised": False}
 
 
 def _parse_entities(blob):

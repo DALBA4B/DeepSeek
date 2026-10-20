@@ -39,6 +39,8 @@ from typing import List, Optional, Tuple
 
 import aiohttp
 
+from rerank import ABSENT_NOTE, entity_name, select_facts
+
 logger = logging.getLogger(__name__)
 _rag_debug = logging.getLogger("ragdebug")
 
@@ -67,6 +69,11 @@ _TOKEN_REFRESH_MARGIN_SECONDS = 60
 #
 # Result at an identical prompt size (logs/trim_tune.log): 12 excerpts instead
 # of 6, spanning 8.3 months instead of 5.0.
+#
+# Selection order: with RERANK_ENABLED=true (rerank.py) the same budget is
+# filled by question relevance instead of server order — junk demoted x0.25,
+# zero-score facts kept as tail insurance. Any rerank failure falls back to
+# the plain trim, so retrieval can never get worse or crash because of it.
 _SEP = "<SEP>"
 _SECTION = re.compile(
     r"Knowledge Graph Data \(Entity\):\s*```json\n(.*?)```"
@@ -115,7 +122,13 @@ def _shrink_description(desc: str, cap: int) -> str:
     return _SEP.join(kept)
 
 
-def compact_context(context: str, desc_cap: int, max_chunks: int) -> Tuple[str, dict]:
+def compact_context(
+    context: str,
+    desc_cap: int,
+    max_chunks: int,
+    query: str = "",
+    rerank_enabled: bool = False,
+) -> Tuple[str, dict]:
     """
     Trim a raw LightRAG context so the prompt spends its budget on chat lines.
 
@@ -123,6 +136,8 @@ def compact_context(context: str, desc_cap: int, max_chunks: int) -> Tuple[str, 
         context:    Raw blob from /query with only_need_context=True.
         desc_cap:   Max characters per entity description (0 = leave alone).
         max_chunks: Max chat excerpts to keep (0 = keep all).
+        query:      The user's query; enables relevance-based selection.
+        rerank_enabled: V3 selection (rerank.py) at the same char budget.
 
     Returns:
         (compacted context, stats dict). If the blob does not match the
@@ -142,15 +157,16 @@ def compact_context(context: str, desc_cap: int, max_chunks: int) -> Tuple[str, 
 
     entities = _json_lines(ent_block)
     if desc_cap > 0 and entities:
-        rebuilt = []
+        shrunk = []
         for ent in entities:
             ent = dict(ent)
             ent["description"] = _shrink_description(
                 ent.get("description", ""), desc_cap
             )
-            rebuilt.append(json.dumps(ent, ensure_ascii=False))
-        new_ent_block = "\n".join(rebuilt) + "\n"
+            shrunk.append(ent)
+        new_ent_block = "\n".join(json.dumps(ent, ensure_ascii=False) for ent in shrunk) + "\n"
     else:
+        shrunk = entities
         new_ent_block = ent_block
 
     chunks = _json_lines(chunk_block)
@@ -183,7 +199,84 @@ def compact_context(context: str, desc_cap: int, max_chunks: int) -> Tuple[str, 
         "chars_before": len(context),
         "chars_after": len(out),
     }
+
+    if rerank_enabled and query and (shrunk or chunks):
+        out, stats = _apply_rerank(
+            context, out, stats, shrunk, chunks, kept, query, match, middle, fence
+        )
     return out, stats
+
+
+def _apply_rerank(
+    context: str,
+    baseline: str,
+    stats: dict,
+    entities: List[dict],
+    chunks: List[dict],
+    baseline_chunks: List[dict],
+    query: str,
+    match: "re.Match",
+    middle: str,
+    fence: str,
+) -> Tuple[str, dict]:
+    """
+    V3 selection (rerank.py): fill the baseline's char budget by relevance.
+
+    Junk facts are demoted, not removed; zero-score facts fill whatever is
+    left, so the output never silently drops half the context. On ANY failure
+    the baseline comes back unchanged — rerank must never make retrieval
+    worse than the plain trim.
+    """
+    try:
+        facts = [
+            ("entity", i, entity_name(e), f"ENTITY {entity_name(e)}: {e.get('description', '')}")
+            for i, e in enumerate(entities)
+        ] + [
+            ("chunk", i, None, f"CHUNK: {c.get('content', c.get('text', ''))}")
+            for i, c in enumerate(chunks)
+        ]
+        kept_facts, rstats = select_facts(facts, query, budget=len(baseline))
+        if not kept_facts:
+            return baseline, stats
+
+        ent_lines = [
+            json.dumps(entities[i], ensure_ascii=False)
+            for k, i, _, _ in kept_facts if k == "entity"
+        ]
+        chunk_lines = [
+            json.dumps(chunks[i], ensure_ascii=False)
+            for k, i, _, _ in kept_facts if k == "chunk"
+        ]
+        out = (
+            context[: match.start()]
+            + "Knowledge Graph Data (Entity):\n```json\n"
+            + ("\n".join(ent_lines) + "\n" if ent_lines else "")
+            + "```"
+            + middle
+            + ("\n".join(chunk_lines) + "\n" if chunk_lines else "")
+            + fence
+            + context[match.end():]
+        )
+        if rstats["absent"]:
+            out += ABSENT_NOTE
+
+        base_keys = {("entity", i) for i in range(len(entities))}
+        base_keys |= {("chunk", i) for i in range(len(baseline_chunks))}
+        v3_keys = {(k, i) for k, i, _, _ in kept_facts}
+        _rag_debug.info(
+            "RAG-DEBUG [rerank] facts=%d kept=%d (ent %d, chunk %d) "
+            "dropped=%d added=%d budget=%d used=%d absent=%s",
+            rstats["facts"], rstats["kept"], rstats["kept_entities"],
+            rstats["kept_chunks"], len(base_keys - v3_keys),
+            len(v3_keys - base_keys), rstats["budget"], rstats["used"],
+            rstats["absent"],
+        )
+        stats = dict(stats)
+        stats["rerank"] = rstats
+        return out, stats
+    except Exception as e:  # noqa: BLE001 — rerank must never break retrieval
+        logger.warning("Rerank failed, falling back to plain trim: %s", e)
+        return baseline, stats
 
 
 class RagClientError(Exception):
@@ -209,6 +302,7 @@ class RagClient:
         context_max_chunks: Max chat excerpts kept after retrieval (0 = all).
         query_timeout:  Seconds to wait for a query answer
         insert_timeout: Seconds to wait for an insert acknowledgement
+        rerank_enabled: Fill the context budget by question relevance (v3)
     """
 
     def __init__(
@@ -223,6 +317,7 @@ class RagClient:
         insert_timeout: float = 15.0,
         context_desc_cap: int = 0,
         context_max_chunks: int = 0,
+        rerank_enabled: bool = False,
     ) -> None:
         # Normalize: strip trailing slash, drop accidental /webui suffix
         url = base_url.strip().rstrip("/")
@@ -238,6 +333,7 @@ class RagClient:
         self.insert_timeout = insert_timeout
         self.context_desc_cap = context_desc_cap
         self.context_max_chunks = context_max_chunks
+        self.rerank_enabled = rerank_enabled
 
         # Reason the last retrieve() failed (timeout / network / HTTP error),
         # or None if it succeeded or simply found nothing. brain.py reads this
@@ -450,7 +546,8 @@ class RagClient:
             return None
 
         context, stats = compact_context(
-            context, self.context_desc_cap, self.context_max_chunks
+            context, self.context_desc_cap, self.context_max_chunks,
+            query=query, rerank_enabled=self.rerank_enabled,
         )
         if stats.get("recognised"):
             _rag_debug.info(

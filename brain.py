@@ -15,6 +15,7 @@ from typing import Awaitable, Callable, Deque, Dict, Hashable, List, Optional, T
 
 from openai import OpenAI
 
+import llm_health
 from models import BotConfig, TokenRange
 from prompts import (
     get_system_prompt,
@@ -315,6 +316,18 @@ class Brain:
         Returns:
             Generated response text, or None if grade==0 (skip).
         """
+        # Balance circuit breaker (llm_health.py): while DeepSeek is out of
+        # money every call fails with 402 anyway, so skip classification,
+        # the LightRAG query and generation entirely — the bot stays quiet
+        # instead of burning retrievals on answers it cannot produce.
+        if llm_health.balance_exhausted():
+            logger.warning(
+                "Пропускаю сообщение: баланс DeepSeek исчерпан (402), "
+                "LLM и LightRAG на паузе ещё %.0fс",
+                llm_health.seconds_left(),
+            )
+            return None
+
         # Step 1: Classify
         msg_ctx = _MessageContext(
             author=author,
@@ -632,6 +645,8 @@ class Brain:
                     )
                     retry_answer = retry_response.choices[0].message.content.strip()
                 except Exception as e:
+                    if llm_health.is_insufficient_balance(e):
+                        llm_health.mark_balance_exhausted()
                     logger.error(f"Retry after blocked media response failed: {e}")
                     return None
 
@@ -653,6 +668,12 @@ class Brain:
             return answer
 
         except Exception as e:
+            if llm_health.is_insufficient_balance(e):
+                llm_health.mark_balance_exhausted()
+                logger.error(
+                    "DeepSeek: баланс исчерпан (402) — LLM и LightRAG на паузе "
+                    f"{int(llm_health.cooldown_seconds() // 60)} мин"
+                )
             logger.error(f"Error generating response from DeepSeek: {e}")
             return FALLBACK_RESPONSES["api_error"]
 

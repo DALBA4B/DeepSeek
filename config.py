@@ -150,6 +150,9 @@ def load_config() -> BotConfig:
         lightrag_context_max_chunks=_get_optional_int("LIGHTRAG_CONTEXT_MAX_CHUNKS", 12),
         lightrag_query_timeout=_get_optional_float("LIGHTRAG_QUERY_TIMEOUT", 35.0),
         lightrag_insert_timeout=_get_optional_float("LIGHTRAG_INSERT_TIMEOUT", 15.0),
+        # Client-side rerank v3 (rerank.py): fill the context budget by
+        # question relevance instead of server order — see plans/RERANK_V3_PLAN.md
+        rerank_enabled=os.getenv("RERANK_ENABLED", "true").lower() in ("true", "1", "yes"),
 
         # Nightly ingest settings
         rag_ingest_enabled=os.getenv("RAG_INGEST_ENABLED", "true").lower() in ("true", "1", "yes"),
