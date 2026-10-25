@@ -5,7 +5,11 @@ expose it (get_rag_usage_stats) plus grudge_level_for — used by the
 /ragstats and /mood commands. Pure in-RAM logic, no network calls.
 """
 
+import pytest
+
+import llm_health
 from brain import Brain, RagUsageStats
+from conversation_analyzer import ClassificationResult, ConversationAnalyzer
 
 
 def test_no_data_yet_gives_zero_hit_rate():
@@ -69,6 +73,51 @@ def test_brain_get_rag_usage_stats_reflects_internal_tracker(bot_config):
     assert d["needs_memory"] == 1
     assert d["facts_retrieved"] == 1
     assert d["hit_rate_pct"] == 100.0
+
+
+class _ShortRagClient:
+    last_error = None
+    query_mode = "mix"
+    query_top_k = 20
+
+    async def retrieve(self, query):
+        return "Knowledge Graph Data"
+
+
+@pytest.mark.asyncio
+async def test_short_rag_context_counts_as_miss_but_stays_in_prompt(
+    bot_config, monkeypatch, caplog
+):
+    monkeypatch.setattr(llm_health, "_exhausted_until", 0.0)
+
+    async def fake_classify(self, msg_ctx, recent_messages):
+        return ClassificationResult(
+            grade=2, needs_memory=True, rag_query="Рома", reason="test"
+        )
+
+    monkeypatch.setattr(ConversationAnalyzer, "classify", fake_classify)
+
+    b = Brain(bot_config)
+    b._rag_client = _ShortRagClient()
+    seen = {}
+
+    def fake_generate(**kwargs):
+        seen.update(kwargs)
+        return "ok"
+
+    monkeypatch.setattr(b, "generate_response", fake_generate)
+
+    with caplog.at_level("WARNING"):
+        answer = await b.analyze_and_respond(
+            message_text="что известно про Рому?", author="Вася", recent_messages=[]
+        )
+
+    assert answer == "ok"
+    assert seen["rag_facts"] == "Knowledge Graph Data"
+    stats = b.get_rag_usage_stats()
+    assert stats["needs_memory"] == 1
+    assert stats["facts_retrieved"] == 0
+    assert "мало данных" in caplog.text
 
 
 def test_brain_grudge_level_for_wraps_grudge_tracker(bot_config):

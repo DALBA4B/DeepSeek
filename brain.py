@@ -37,6 +37,8 @@ _rag_debug = logging.getLogger("ragdebug")
 # Situations the classifier can emit — see conversation_analyzer._SITUATIONS.
 _SITUATIONS = ("joke", "help", "casual", "tease", "defend")
 
+_MIN_RAG_FACTS_CHARS = 500
+
 
 class GrudgeTracker:
     """
@@ -415,8 +417,18 @@ class Brain:
             t1 = time.monotonic()
             rag_facts = await self._rag_client.retrieve(result.rag_query)
             retrieve_ms = (time.monotonic() - t1) * 1000
-            self._rag_usage.record_retrieval(bool(rag_facts))
-            if rag_facts:
+            short_facts = bool(rag_facts) and len(rag_facts) < _MIN_RAG_FACTS_CHARS
+            self._rag_usage.record_retrieval(bool(rag_facts) and not short_facts)
+            if short_facts:
+                logger.warning(
+                    "LightRAG выдал мало данных (%d chars < %d) — считаю пустой выдачей (query=%r)",
+                    len(rag_facts), _MIN_RAG_FACTS_CHARS, result.rag_query,
+                )
+                _rag_debug.info(
+                    "RAG-DEBUG [2/4 retrieve] done in %.0fms -> %d chars (мало данных, пустая выдача):\n%s",
+                    retrieve_ms, len(rag_facts), rag_facts,
+                )
+            elif rag_facts:
                 logger.info(
                     "LightRAG facts retrieved (%d chars)", len(rag_facts)
                 )
