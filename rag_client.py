@@ -235,7 +235,13 @@ def _apply_rerank(
             ("chunk", i, None, f"CHUNK: {c.get('content', c.get('text', ''))}")
             for i, c in enumerate(chunks)
         ]
-        kept_facts, rstats = select_facts(facts, query, budget=len(baseline))
+        # `baseline_chunks` is the plain trim's prefix (already capped at
+        # context_max_chunks). Rerank may reorder / promote chunks from the
+        # full list, but it must never exceed that cap — otherwise the budget
+        # alone lets extra chunks back in after compaction.
+        kept_facts, rstats = select_facts(
+            facts, query, budget=len(baseline), max_chunks=len(baseline_chunks)
+        )
         if not kept_facts:
             return baseline, stats
 

@@ -154,7 +154,7 @@ class BotConfig:
     
     # Memory settings
     short_memory_limit: int = 30
-    context_messages_count: int = 20
+    context_messages_count: int = 30
     
     # DeepSeek settings
     deepseek_base_url: str = "https://api.deepseek.com"
@@ -216,6 +216,13 @@ class BotConfig:
     # Client-side rerank (rerank.py): same char budget as the plain trim, but
     # filled by question relevance; junk demoted, zero-score facts kept last.
     rerank_enabled: bool = True
+
+    # Short-lived reuse of the last LightRAG context for follow-ups in the same
+    # thread (rag_cache.py). Conservative by design: absolute TTL and a query
+    # overlap check, otherwise the bot queries LightRAG again.
+    rag_cache_enabled: bool = True
+    rag_cache_ttl_seconds: float = 120.0
+    rag_cache_min_overlap: int = 2
 
     # Nightly ingest: how often and how the chat is grouped before insert
     rag_ingest_enabled: bool = True

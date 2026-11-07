@@ -108,7 +108,7 @@ def load_config() -> BotConfig:
         # short_memory_limit: recent context for quick responses (RAM deque with N last messages)
         # All messages for the entire day are kept in daily_log (RAM) for DeepSeek analysis
         short_memory_limit=_get_optional_int("SHORT_MEMORY_LIMIT", 30),
-        context_messages_count=_get_optional_int("CONTEXT_MESSAGES_COUNT", 20),
+        context_messages_count=_get_optional_int("CONTEXT_MESSAGES_COUNT", 30),
         
         # DeepSeek settings
         deepseek_base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
@@ -153,6 +153,12 @@ def load_config() -> BotConfig:
         # Client-side rerank v3 (rerank.py): fill the context budget by
         # question relevance instead of server order — see plans/RERANK_V3_PLAN.md
         rerank_enabled=os.getenv("RERANK_ENABLED", "true").lower() in ("true", "1", "yes"),
+        # Short-lived reuse of the last LightRAG context for follow-ups in the
+        # same thread (rag_cache.py). Conservative: 2 min, same author/thread,
+        # overlapping query — anything else is a fresh retrieval.
+        rag_cache_enabled=os.getenv("RAG_CACHE_ENABLED", "true").lower() in ("true", "1", "yes"),
+        rag_cache_ttl_seconds=_get_optional_float("RAG_CACHE_TTL_SECONDS", 120.0),
+        rag_cache_min_overlap=_get_optional_int("RAG_CACHE_MIN_OVERLAP", 2),
 
         # Nightly ingest settings
         rag_ingest_enabled=os.getenv("RAG_INGEST_ENABLED", "true").lower() in ("true", "1", "yes"),

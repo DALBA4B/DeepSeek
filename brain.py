@@ -25,6 +25,7 @@ from prompts import (
     GIF_REQUEST_KEYWORDS,
     STICKER_REQUEST_KEYWORDS,
 )
+from rag_cache import RagCache
 from rag_client import RagClient
 from conversation_analyzer import ConversationAnalyzer, _MessageContext
 from retry import retry_sync
@@ -273,6 +274,14 @@ class Brain:
             }
             self._grudge = GrudgeTracker()
             self._rag_usage = RagUsageStats()
+            self._rag_cache = (
+                RagCache(
+                    ttl_seconds=config.rag_cache_ttl_seconds,
+                    min_overlap=config.rag_cache_min_overlap,
+                )
+                if config.rag_cache_enabled
+                else None
+            )
             logger.info("Brain initialized: DeepSeek client ready")
         except Exception as e:
             logger.error(f"Failed to initialize Brain: {e}")
@@ -407,57 +416,83 @@ class Brain:
             self._grudge.record_attack(key)
             logger.info("Defend triggered for %s: grudge_level=%d", key, grudge_level)
 
-        # Step 3: Fetch facts from LightRAG if needed
+        # Step 3: Fetch facts from LightRAG if needed. A close follow-up in the
+        # same thread may reuse the previous context (rag_cache.py) instead of
+        # paying for a second retrieval and another large prompt block.
         rag_facts = ""
         if result.needs_memory and self._rag_client and result.rag_query:
-            _rag_debug.info(
-                "RAG-DEBUG [2/4 retrieve] querying LightRAG: query=%r mode=%s top_k=%s",
-                result.rag_query, self._rag_client.query_mode, self._rag_client.query_top_k,
+            cache_args = {
+                "chat_id": chat_id,
+                "author": author,
+                "user_id": user_id,
+                "message_text": message_text,
+                "reply_text": reply_text,
+                "query": result.rag_query,
+            }
+            cached = (
+                self._rag_cache.get(**cache_args)
+                if self._rag_cache is not None and chat_id is not None
+                else None
             )
-            t1 = time.monotonic()
-            rag_facts = await self._rag_client.retrieve(result.rag_query)
-            retrieve_ms = (time.monotonic() - t1) * 1000
-            short_facts = bool(rag_facts) and len(rag_facts) < _MIN_RAG_FACTS_CHARS
-            self._rag_usage.record_retrieval(bool(rag_facts) and not short_facts)
-            if short_facts:
-                logger.warning(
-                    "LightRAG выдал мало данных (%d chars < %d) — считаю пустой выдачей (query=%r)",
-                    len(rag_facts), _MIN_RAG_FACTS_CHARS, result.rag_query,
-                )
+            if cached:
+                rag_facts = cached
+                self._rag_usage.record_retrieval(True)
+                logger.info("LightRAG facts from cache (%d chars)", len(rag_facts))
                 _rag_debug.info(
-                    "RAG-DEBUG [2/4 retrieve] done in %.0fms -> %d chars (мало данных, пустая выдача):\n%s",
-                    retrieve_ms, len(rag_facts), rag_facts,
-                )
-            elif rag_facts:
-                logger.info(
-                    "LightRAG facts retrieved (%d chars)", len(rag_facts)
-                )
-                _rag_debug.info(
-                    "RAG-DEBUG [2/4 retrieve] done in %.0fms -> %d chars returned:\n%s",
-                    retrieve_ms, len(rag_facts), rag_facts,
+                    "RAG-DEBUG [2/4 retrieve] cache hit -> %d chars (query=%r)",
+                    len(rag_facts), result.rag_query,
                 )
             else:
-                # A memory miss is never fatal — but it must be visible. The bot
-                # is about to answer as if it remembers nothing, and silently
-                # degrading here is exactly how a broken/slow LightRAG goes
-                # unnoticed for days. Separate the two causes: a failed request
-                # (timeout/network/HTTP) is an infrastructure problem, an empty
-                # result is a retrieval-quality problem.
-                rag_error = getattr(self._rag_client, "last_error", None)
-                if rag_error:
-                    logger.warning(
-                        "Отвечаю БЕЗ памяти: LightRAG не ответил за %.0fms (query=%r): %s",
-                        retrieve_ms, result.rag_query, rag_error,
-                    )
-                else:
-                    logger.warning(
-                        "Отвечаю БЕЗ памяти: LightRAG ничего не нашёл за %.0fms (query=%r)",
-                        retrieve_ms, result.rag_query,
-                    )
                 _rag_debug.info(
-                    "RAG-DEBUG [2/4 retrieve] done in %.0fms -> ничего не найдено (%s)",
-                    retrieve_ms, rag_error or "пустой результат, LightRAG ответил",
+                    "RAG-DEBUG [2/4 retrieve] querying LightRAG: query=%r mode=%s top_k=%s",
+                    result.rag_query, self._rag_client.query_mode, self._rag_client.query_top_k,
                 )
+                t1 = time.monotonic()
+                rag_facts = await self._rag_client.retrieve(result.rag_query)
+                retrieve_ms = (time.monotonic() - t1) * 1000
+                short_facts = bool(rag_facts) and len(rag_facts) < _MIN_RAG_FACTS_CHARS
+                self._rag_usage.record_retrieval(bool(rag_facts) and not short_facts)
+                if short_facts:
+                    logger.warning(
+                        "LightRAG выдал мало данных (%d chars < %d) — считаю пустой выдачей (query=%r)",
+                        len(rag_facts), _MIN_RAG_FACTS_CHARS, result.rag_query,
+                    )
+                    _rag_debug.info(
+                        "RAG-DEBUG [2/4 retrieve] done in %.0fms -> %d chars (мало данных, пустая выдача):\n%s",
+                        retrieve_ms, len(rag_facts), rag_facts,
+                    )
+                elif rag_facts:
+                    logger.info(
+                        "LightRAG facts retrieved (%d chars)", len(rag_facts)
+                    )
+                    _rag_debug.info(
+                        "RAG-DEBUG [2/4 retrieve] done in %.0fms -> %d chars returned:\n%s",
+                        retrieve_ms, len(rag_facts), rag_facts,
+                    )
+                    if self._rag_cache is not None and chat_id is not None:
+                        self._rag_cache.put(**cache_args, facts=rag_facts)
+                else:
+                    # A memory miss is never fatal — but it must be visible. The bot
+                    # is about to answer as if it remembers nothing, and silently
+                    # degrading here is exactly how a broken/slow LightRAG goes
+                    # unnoticed for days. Separate the two causes: a failed request
+                    # (timeout/network/HTTP) is an infrastructure problem, an empty
+                    # result is a retrieval-quality problem.
+                    rag_error = getattr(self._rag_client, "last_error", None)
+                    if rag_error:
+                        logger.warning(
+                            "Отвечаю БЕЗ памяти: LightRAG не ответил за %.0fms (query=%r): %s",
+                            retrieve_ms, result.rag_query, rag_error,
+                        )
+                    else:
+                        logger.warning(
+                            "Отвечаю БЕЗ памяти: LightRAG ничего не нашёл за %.0fms (query=%r)",
+                            retrieve_ms, result.rag_query,
+                        )
+                    _rag_debug.info(
+                        "RAG-DEBUG [2/4 retrieve] done in %.0fms -> ничего не найдено (%s)",
+                        retrieve_ms, rag_error or "пустой результат, LightRAG ответил",
+                    )
         elif result.needs_memory:
             _rag_debug.info(
                 "RAG-DEBUG [2/4 retrieve] skipped: needs_memory=True но rag_client=%s rag_query=%r "

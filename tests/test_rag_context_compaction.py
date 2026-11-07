@@ -201,6 +201,23 @@ class TestRerankIntegration:
         assert out == weird
         assert stats == {"recognised": False}
 
+    def test_rerank_cannot_re_add_chunks_beyond_the_cap(self):
+        # Regression: compact_context trimmed 20 -> 12, then rerank used the
+        # full 20-chunk list with the same total budget and let all 20 back in.
+        chunks = [
+            {"reference_id": str(i),
+             "content": f"[2026-01-{i:02d}] разговор про кальян номер {i}"}
+            for i in range(1, 21)
+        ]
+        ents = [{"entity": "Максим", "type": "person", "description": "кальян"}]
+        out, stats = compact_context(
+            _blob(ents, [], chunks), 1200, 12,
+            query="Максим кальян", rerank_enabled=True,
+        )
+        assert stats["rerank"]["max_chunks"] == 12
+        assert stats["rerank"]["kept_chunks"] <= 12
+        assert out.count('"reference_id"') <= 12
+
 
 def _parse_entities(blob):
     body = blob.split("```json\n", 1)[1].split("```", 1)[0]

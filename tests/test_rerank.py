@@ -170,6 +170,43 @@ class TestSelectFacts:
         assert stats["kept_chunks"] == 1
 
 
+class TestMaxChunks:
+    def test_chunk_cap_is_respected_even_when_budget_allows_more(self):
+        # Regression: rerank used the full 20-chunk list and the compacted
+        # budget, so after compact_context trimmed 20 -> 12 all 20 came back.
+        facts = [
+            ("chunk", i, None, f"CHUNK: {i} " + "слово " * 30)
+            for i in range(20)
+        ]
+        kept, stats = select_facts(facts, "слово", budget=10_000_000, max_chunks=12)
+        assert stats["kept_chunks"] == 12
+        assert len(kept) == 12
+
+    def test_chunk_cap_does_not_block_entities(self):
+        entities = [
+            ("entity", i, f"E{i}", f"ENTITY E{i}: " + "слово " * 10)
+            for i in range(5)
+        ]
+        chunks = [
+            ("chunk", i, None, f"CHUNK: {i} " + "слово " * 30)
+            for i in range(20)
+        ]
+        kept, stats = select_facts(
+            entities + chunks, "слово", budget=10_000_000, max_chunks=12
+        )
+        assert stats["kept_entities"] == 5
+        assert stats["kept_chunks"] == 12
+        assert stats["kept"] == 17
+
+    def test_zero_max_chunks_means_unlimited(self):
+        facts = [
+            ("chunk", i, None, f"CHUNK: {i} " + "слово " * 30)
+            for i in range(20)
+        ]
+        _, stats = select_facts(facts, "слово", budget=10_000_000)
+        assert stats["kept_chunks"] == 20
+
+
 def test_entity_name_variants():
     assert entity_name({"entity": "Тима"}) == "Тима"
     assert entity_name({"name": "Тима"}) == "Тима"

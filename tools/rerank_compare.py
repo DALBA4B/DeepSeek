@@ -94,8 +94,8 @@ def main() -> int:
         v1 = [(k["kind"], k["idx"],
                next(t for kk, ii, t in facts if kk == k["kind"] and ii == k["idx"]))
               for k in v1kept]
-        # v3 — the module the bot ships
-        kept4, v3stats = select_facts(facts4, q, budget)
+        # v3 — the module the bot ships (same chunk cap as production)
+        kept4, v3stats = select_facts(facts4, q, budget, max_chunks=max_chunks)
         v3 = [(k, i, t) for k, i, _, t in kept4]
         absent = v3stats["absent"]
 

@@ -185,6 +185,7 @@ def select_facts(
     facts: List[Tuple[str, int, Optional[str], str]],
     question: str,
     budget: int,
+    max_chunks: int = 0,
 ) -> Tuple[List[Tuple[str, int, Optional[str], str]], dict]:
     """
     Pick facts for the prompt within `budget` characters, best score first.
@@ -197,6 +198,9 @@ def select_facts(
         question: The user's natural-language query.
         budget:   Character budget (the length of the plain trim's output —
                   the selection stays "за ту же цену").
+        max_chunks: Hard cap on selected chat excerpts (0 = unlimited). This
+                  is what enforces LIGHTRAG_CONTEXT_MAX_CHUNKS: the budget
+                  alone cannot, because a smaller chunk can always squeeze in.
 
     Returns:
         (kept facts in prompt order, stats). Zero-score facts are NOT thrown
@@ -221,11 +225,16 @@ def select_facts(
 
     kept: List[Tuple[str, int, Optional[str], str]] = []
     used = 0
+    kept_chunks = 0
     for _, _, kind, idx, subject, text in scored:
+        if kind == "chunk" and max_chunks and kept_chunks >= max_chunks:
+            continue
         if used + len(text) > budget and kept:
             continue
         kept.append((kind, idx, subject, text))
         used += len(text)
+        if kind == "chunk":
+            kept_chunks += 1
         if used >= budget:
             break
 
@@ -237,6 +246,7 @@ def select_facts(
         "kept": len(kept),
         "kept_entities": sum(1 for k, _, _, _ in kept if k == "entity"),
         "kept_chunks": sum(1 for k, _, _, _ in kept if k == "chunk"),
+        "max_chunks": max_chunks,
         "absent": absent,
     }
     return kept, stats
