@@ -300,6 +300,12 @@ async def run(args, config: BotConfig) -> int:
     if args.only:
         needle = args.only.casefold()
         groups = [g for g in groups if any(needle in m.casefold() for m in g)]
+    excluded = {
+        tuple(sorted(part.strip() for part in spec.split("|") if part.strip()))
+        for spec in args.exclude
+    }
+    if excluded:
+        groups = [g for g in groups if tuple(sorted(g)) not in excluded]
     logger.info("%d entities, %d duplicate group(s) to handle", len(labels), len(groups))
     if not groups:
         return 0
@@ -327,6 +333,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Merge duplicate entities in the LightRAG graph.")
     parser.add_argument("--dry-run", action="store_true", help="Show the plan without merging")
     parser.add_argument("--only", help="Only groups containing this substring")
+    parser.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        metavar="A|B",
+        help="Skip one exact group, members separated by '|' (repeatable)",
+    )
     parser.add_argument(
         "--force", action="store_true",
         help="Merge even when descriptions look unrelated (skip the conflict guard)",

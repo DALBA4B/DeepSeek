@@ -35,6 +35,10 @@ Design (matches the discussion / PHASE plans)
 * Resumable: every successfully inserted day is recorded in a progress file
   (default import_progress.json). Re-running skips days already done, so you
   can stop/restart freely and go month by month.
+* Multi-chat: file_source is built from --source-prefix, so two different
+  chats can cover the same dates without document collisions. A non-default
+  prefix gets its own progress file automatically; --chat-label optionally
+  adds a provenance line to each day's document.
 
 Getting the export
 ------------------
@@ -55,6 +59,10 @@ Usage
     # re-import days already done (ignore progress file)
     python tools/import_history.py --file result.json --force
 
+    # another chat, same shared graph: unique file_source prefix and progress
+    python tools/import_history.py --file other.json \
+        --source-prefix telegram_import_other
+
 Notes
 -----
 * Reads LightRAG connection from the same .env / config.py the bot uses.
@@ -67,6 +75,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 from collections import Counter, defaultdict
 from datetime import date, datetime
@@ -91,6 +100,8 @@ logging.basicConfig(
 logger = logging.getLogger("import_history")
 
 _PROGRESS_FILE_DEFAULT = "import_progress.json"
+_SOURCE_PREFIX_DEFAULT = "telegram_import"
+_CHAT_LABEL_MAX_LEN = 80
 _NAME_MAP_FILE_DEFAULT = "import_names.json"
 _INSERT_MAX_ATTEMPTS = 3
 _INSERT_RETRY_BASE_DELAY = 2.0  # seconds; backfill is not latency-sensitive
@@ -391,6 +402,31 @@ def _is_media_only(day_messages: List[ChatMessage]) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Multi-chat identity (source prefix + progress)
+# ---------------------------------------------------------------------------
+def validate_source_prefix(prefix: str) -> str:
+    """Keep file_source values predictable and safe to embed in a filename."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", prefix or ""):
+        raise ValueError(
+            "source prefix may contain only letters, digits, '_' and '-'"
+        )
+    return prefix
+
+
+def resolve_progress_path(explicit: Optional[str], source_prefix: str) -> str:
+    """One progress file per chat by default: dates overlap across chats.
+
+    An explicit --progress always wins. Otherwise the historical main chat
+    keeps import_progress.json and every other prefix gets its own file.
+    """
+    if explicit:
+        return explicit
+    if source_prefix == _SOURCE_PREFIX_DEFAULT:
+        return _PROGRESS_FILE_DEFAULT
+    return f"import_progress_{source_prefix}.json"
+
+
+# ---------------------------------------------------------------------------
 # Progress file (resumability)
 # ---------------------------------------------------------------------------
 def load_progress(path: str) -> set:
@@ -471,7 +507,7 @@ async def run_import(args, config: BotConfig) -> int:
         logger.error("No days in the selected range.")
         return 1
 
-    progress_path = args.progress
+    progress_path = resolve_progress_path(args.progress, args.source_prefix)
     completed = set() if args.force else load_progress(progress_path)
 
     # A RagIngestor purely to reuse group_into_blocks/_render_block. It never
@@ -515,7 +551,9 @@ async def run_import(args, config: BotConfig) -> int:
             continue
 
         combined_text = "\n\n".join(blocks)
-        file_source = f"telegram_import_{day_key}"
+        if args.chat_label:
+            combined_text = f"[чат: {args.chat_label}]\n\n{combined_text}"
+        file_source = f"{args.source_prefix}_{day_key}"
 
         if args.dry_run:
             logger.info(
@@ -596,7 +634,20 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Parse+group only, no inserts")
     parser.add_argument("--show", action="store_true", help="With --dry-run, print block text")
     parser.add_argument("--force", action="store_true", help="Ignore progress file, re-import all days")
-    parser.add_argument("--progress", default=_PROGRESS_FILE_DEFAULT, help="Progress file path")
+    parser.add_argument(
+        "--progress", default=None,
+        help="Progress file path (default: import_progress.json, or "
+             "import_progress_<source-prefix>.json for a non-default prefix)",
+    )
+    parser.add_argument(
+        "--source-prefix", default=_SOURCE_PREFIX_DEFAULT, dest="source_prefix",
+        help="Prefix for file_source; use a unique one per chat so documents "
+             "covering the same dates do not collide (default: telegram_import)",
+    )
+    parser.add_argument(
+        "--chat-label", default="", dest="chat_label",
+        help="Optional chat name; adds a '[чат: ...]' provenance line to each day",
+    )
     parser.add_argument(
         "--name-map", default=_NAME_MAP_FILE_DEFAULT, dest="name_map",
         help="from_id -> canonical name map, so renamed people stay one entity",
@@ -607,6 +658,16 @@ def main() -> None:
         help=f"Truncate messages longer than this (default {_MAX_MSG_CHARS_DEFAULT}, 0 = keep full text)",
     )
     args = parser.parse_args()
+
+    try:
+        validate_source_prefix(args.source_prefix)
+    except ValueError as e:
+        parser.error(str(e))
+    args.chat_label = args.chat_label.strip()
+    if "\n" in args.chat_label or len(args.chat_label) > _CHAT_LABEL_MAX_LEN:
+        parser.error(
+            f"chat label must be one line, at most {_CHAT_LABEL_MAX_LEN} chars"
+        )
 
     config = load_config()
     exit_code = asyncio.run(run_import(args, config))
